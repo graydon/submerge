@@ -1,11 +1,14 @@
+#![allow(dead_code)]
+
 use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
 use serde::{Serialize,Deserialize};
 
+
 #[derive(Debug,Clone,Eq,PartialEq,Ord,PartialOrd,Hash,Default,Serialize,Deserialize)]
-struct Brevet;
+pub struct Brevet;
 
 #[derive(Debug,Clone,Eq,PartialEq,Ord,PartialOrd,Hash,Serialize,Deserialize)]
-struct BrevetResult(Result<brevet::Expr, brevet::Error>);
+pub struct BrevetResult(Result<brevet::Expr, brevet::Error>);
 
 impl Default for BrevetResult {
     fn default() -> Self {
@@ -18,23 +21,23 @@ impl clepsydra::Lang for Brevet {
     type Val = BrevetResult;
     type Stmt = brevet::Expr;
     type Expr = brevet::Expr;
-    fn get_write_set(s: &Self::Stmt) -> BTreeMap<Self::Key, Self::Expr> {
+    fn get_write_set(_s: &Self::Stmt) -> BTreeMap<Self::Key, Self::Expr> {
         BTreeMap::new()
     }
-    fn get_read_set(e: &Self::Expr) -> BTreeSet<Self::Key> {
+    fn get_read_set(_e: &Self::Expr) -> BTreeSet<Self::Key> {
         BTreeSet::new()
     }
-    fn get_eval_set(s: &Self::Stmt) -> BTreeSet<Self::Key> {
+    fn get_eval_set(_s: &Self::Stmt) -> BTreeSet<Self::Key> {
         BTreeSet::new()
     }
 
     fn eval_expr(
         e: &Self::Expr,
-        vals: &[Self::Val],
+        _vals: &[Self::Val],
         env: &BTreeMap<Self::Key, clepsydra::ExtVal<Self>>,
     ) -> clepsydra::ExtVal<Self> {
         let mut benv = brevet::Expr::Top;
-        for (k, v) in env.iter() {
+        for (_k, v) in env.iter() {
             if let clepsydra::ExtVal::Defined(BrevetResult(v)) = v {
                 match v {
                     Ok(vgood) => benv = brevet::Expr::Merge(Arc::new(benv.clone()), Arc::new(vgood.clone())),
@@ -53,18 +56,18 @@ impl clepsydra::Lang for Brevet {
     }
 }
 
-struct TieredStore {
+pub struct TieredStore {
     hot: redb::Database,
     // TODO: newel
     cold: BTreeMap<String, std::fs::File>,
 }
 
 impl clepsydra::Store<Brevet> for TieredStore {
-    fn get_key_at_or_before_time(&self, kv: &clepsydra::KeyVer<Brevet>) -> Option<(clepsydra::GlobalTime, clepsydra::Entry<Brevet>)> {
+    fn get_key_at_or_before_time(&self, _kv: &clepsydra::KeyVer<Brevet>) -> Option<(clepsydra::GlobalTime, clepsydra::Entry<Brevet>)> {
         todo!()
     }
 
-    fn put_key_at_time(&mut self, kv: &clepsydra::KeyVer<Brevet>, v: &clepsydra::Entry<Brevet>) {
+    fn put_key_at_time(&mut self, _kv: &clepsydra::KeyVer<Brevet>, _v: &clepsydra::Entry<Brevet>) {
         todo!()
     }
 
@@ -73,6 +76,6 @@ impl clepsydra::Store<Brevet> for TieredStore {
     }
 }
 
-struct System {
+pub struct System {
     db: clepsydra::Database<Brevet, TieredStore>
 }
