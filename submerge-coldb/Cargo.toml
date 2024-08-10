@@ -1,0 +1,10 @@
+[package]
+name = "submerge-coldb"
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]

@@ -1,18 +1,30 @@
-[package]
-name = "submerge"
+[workspace]
+resolver = "2"
+# 16 subsystems, max 16kloc each, 256kloc total.
+# 16kloc is a good size for a single developer to understand and maintain.
+members = [
+    "submerge",         # Top level client-or-server executable.
+    "submerge-ui",      # TUI, forms, printing, GUI toolkit support, etc.
+    "submerge-net",     # Client-server and server-server networking.
+    "submerge-txn",     # Transactions, replication, consistency, time, etc.
+    "submerge-lang",    # Language, types, values, scopes, modules, etc.
+    "submerge-eval",    # Incrementalism, metaprograms, staging, triggers, etc.
+    "submerge-test",    # Introspection, snapshots, diagnostics, judgments.
+    "submerge-user",    # Accounts, guest users, preferences, sessions, etc.
+    "submerge-auth",    # Authentication, authorization, endorsement, signatures, etc.
+    "submerge-vers",    # Versioning, history, undo, fork-merge, provenance, etc.
+    "submerge-rowdb",   # BTree planner and executor.
+    "submerge-coldb",   # LSM planner and executor, stable storage format.
+    "submerge-cloud",   # Cloud storage and replica provisioning.
+    "submerge-adapt",   # External system and format interop, pubsub, adaptors.
+    "submerge-admin",   # Admin, config, system policies, logging, audit, metrics, etc.
+    "submerge-money",   # User-billing, payment, subscription, licensing, commissions.
+]
+
+[workspace.package]
 version = "0.2.0"
-edition = "2021"
+authors = ["Graydon Hoare"]
 description = "Experimental database thing"
-readme = "README.md"
-repository = "https://github.com/graydon/submerge"
+edition = "2021"
 license = "MIT OR Apache-2.0"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[dependencies]
-redb = "1.3.0"
-brevet = "0.4"
-# brevet = {path = "../brevet"}
-newel = "0.2"
-clepsydra = "0.2"
-serde = { version = "1.0", features = ["derive", "rc"] }
+publish = false

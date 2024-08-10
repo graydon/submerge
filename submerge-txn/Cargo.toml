@@ -1,0 +1,17 @@
+[package]
+name = "submerge-txn"
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+submerge-lang = { path = "../submerge-lang" }
+submerge-eval = { path = "../submerge-eval" }
+submerge-net = { path = "../submerge-net" }
+backtrace-error = "0.5.0"
+
+[dev-dependencies]
+stateright = "0.30.2"

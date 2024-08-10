@@ -1,0 +1,19 @@
+[package]
+name = "submerge"
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "submerge"
+path = "src/lib.rs"
+
+[[bin]]
+name = "submerge"
+path = "src/bin.rs"
+
+[dependencies]
+submerge-ui = { path = "../submerge-ui" }

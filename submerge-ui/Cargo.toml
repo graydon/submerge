@@ -1,0 +1,12 @@
+[package]
+name = "submerge-ui"
+version.workspace = true
+authors.workspace = true
+description.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+crossterm = "0.27.0"
+ratatui = "0.26.3"
