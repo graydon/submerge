@@ -1,126 +1,180 @@
-// GUH all this is bad and wrong and not sufficient and over-engineered.
+// Column chunks have <= 256 rows, 16 primitive forms:
 //
-// Look at arrow. Take a subset of it.
-
-// Columns have 16 primitive forms:
-//
-// - Err -- 1 code no body
-// - Nil -- 1 code no body
-// - Bit -- 1 code bitmap body
-// - Flo (direct, 8 bytes) -- 1 code, 1 word body
-// - Int (direct, 1,2,4,8 bytes) -- 4 codes
-// - Int (sliced, 1..=8 bytes) -- 8 codes
+// - Bit (sparse, 1 byte units) -- 1 code when <= 32 bits set
+// - Bit (dense, 256-bit / 32-byte unit, a bitmap) -- 1 code when > 32 bits set
+// - Int (direct, 1,2,4,8 byte units) -- 4 codes
+// - Int (sliced, 1 byte units, 1..=8 times) -- 8 codes
+// - Flo (direct, 8 byte units) -- 1 code, 1 word body
+// - Bin (subcols: prefixes, hashes, offsets, sizes)
 // 
 // All int forms are FOR-encoded based on the chunk min val.
 //
-// Primitive columns are then arranged into _basic_ columns, which can
-// have multi-column _encoding_ substructure but add no _logical_
-// substructure (at the language level):
+// Primitive columns chunks are then arranged into _basic_ column
+// chunks, which can have multi-column _encoding_ substructure but add
+// no _logical_ substructure (at the language level). Also the basic
+// column chunk structure may vary chunk-to-chunk in the same column.
 //
 //   - Prim (no subcols)
-//   - Bins (subcols: prefixes, hashes, offsets, sizes)
-//   - Runs (subcols: values, offsets, sizes)
+//   - Runs (subcols: values, run-ends)
 //   - Dict (subcols: codes, values)
+//   - Virt (no subcols, val is min+(row*max) if pos, min+(row/-max) if neg:
+//           mainy used for fixed-child-count-per-parent structure definition)
 //
-// Finally, basic columns are arranged into _logical_ columns, which
-// have logical substructure (surfaced at the PL level)
+// Finally, a heterogeneous sequence of basic column chunks are
+// arranged into _logical_ columns, which have both a length in basic
+// column chunks and a width of some number of basic-columns making up
+// a logical substructure (surfaced at the PL level)
 //
-//   - Basic (no subcols, 6 sub-cases: err, nil, bit, flo, int, bin)
-//   - Lists (subcols: 1 offsets, 1 sizes, 1 child column)
-//   - Table (&, subcols: N child columns)
-//   - Union (|, subcols: 1 selector, 1 offsets, N child columns)
-//   - Boxed (>, subcols: 1 table, 1 code)
+//   - Basic (no subcols)
+//   - Multi (subcols: 1 parent-to-child offsets (often pos-virt), 1 child-to-parent offsets (often neg-virt), 1 child column)
+//   - AllOf (&, subcols: N child columns)
+//   - OneOf (|, subcols: 1 selector, 1 offsets, N child columns)
 //
-// Every logical column has, at the file level, a unique-in-its-parent _label_ and a major/minor/role type-triple.
-// This is the file's logical column catalogue, which there is one of per file.
-// The column catalogue has a table-level heap and a nested set of "multi"-columns of dictionary-coded bins.
+// Every logical column has, at the file level, a unique-in-its-parent
+// _label_ and a major/minor/role type-triple. This is the file's
+// logical column catalogue, which there is one of per file. The
+// column catalogue has a table-level heap and a nested set of
+// "multi"-columns of dictionary-coded bins.
 //
-// Note: a _decoded_ bin is _4_ words: prefix, offset, size, _heap ID_. These IDs can basically never be exhausted.
+// Note: a _decoded_ bin is _5_ words: prefix, hash, offset, size, _heap ID_. These IDs can basically never be exhausted.
 // Note: iterators for all int-types yield i64 values regardless of basic and primitive encoding.
 // Note: this is the same yielded-type between rowdb and coldb interfaces.
 // Note: only _predicate pushdown_ allows pruning sliced ints before reassembly.
 
+// Then a 64k-row block contains tracks (per column) and each track has up to 256 chunks.
+// The chunk bitmap has 256 bits / 32 bytes.
+
+// Layer file contains
+// Block of columns, each contains
+// Track per column, contains
+// Chunk sequence
+
+#![allow(dead_code,unused_variables)]
+
 struct LayerWriter {
 }
-
 struct BlockWriter {
+    lyr: Box<LayerWriter>
+}
+struct TrackWriter {
+    blk: Box<BlockWriter>
+}
+struct ChunkWriter {
+    trk: Box<TrackWriter>
 }
 
+impl ChunkWriter {
 
-struct FileReader {
+    // A chunk should use positive-virt encoding if every value is
+    // row*n for some n. We should notice this is _not_ the case after
+    // the second iteration of looking.
+    fn pos_virt_base_and_factor(vals: &[i64]) -> Option<(i64,i64)> {
+	// For 0 or 1 value, we prefer encoding as prim.
+	if vals.len() < 2 {
+	    return None;
+	}
+	let mut base: i64 = 0;
+	let mut prev: i64 = 0;
+	let mut diff: i64 = 0;
+	for (i, val) in vals.iter().enumerate() {
+	    if i == 0 {
+		base = *val;
+		prev = *val;
+	    } else if i == 1 {
+		diff = *val - prev;
+		prev = *val;
+	    } else if diff == *val - prev {
+		prev = *val;
+	    } else {
+		// Pattern does not hold.
+		return None;
+	    }
+	}
+	Some((base, diff))
+    }
+
+    // A chunk should use negative-virt encoding if every value is
+    // row/n for some n, which is true exactly when it's a sequence
+    // of n-length runs of values that ascend by 1 after each run.
+    fn neg_virt_base_and_factor(vals: &[i64]) -> Option<(i64,i64)> {
+	// For 0 or 1 value, we prefer encoding as prim.
+	// eprintln!("examining {:?}", vals);
+	if vals.len() < 2 {
+	    // eprintln!("too few vals");
+	    return None;
+	}
+	let mut base = 0;
+	let mut prev = 0;
+	let mut run = 0;
+	let mut curr_run_len = 0;
+	let mut prev_run_len = 0;
+	for (i, val) in vals.iter().enumerate() {
+	    if i == 0 {
+		base = *val;
+		prev = *val;
+		curr_run_len = 1;
+	    } else if prev == *val {
+		// Run coninues.
+		prev = *val;
+		curr_run_len += 1;
+	    } else if prev + 1 != *val {
+		// Run transition that is too big.
+		// eprintln!("run transition too big at vals[{}] = {}: prev={}", i, *val, prev);
+		return None;
+	    } else {
+		// Possibly-valid run transition.
+		if run != 0 && prev_run_len != curr_run_len {
+		    // Run lengths differ.
+		    // eprintln!("run lengths differ at vals[{}] = {}: prev={}, run={},
+		    //           prev_run_len={}, curr_run_len={}", i, *val, prev, run,
+		    //           prev_run_len, curr_run_len);
+		    return None;
+		}
+		// Start new run.
+		prev = *val;
+		prev_run_len = curr_run_len;
+		curr_run_len = 1;
+		run += 1;
+	    }
+	}
+	if run != 0 && curr_run_len <= prev_run_len {
+	    // Allow final run to be short
+	    Some((base,-prev_run_len))
+	} else {
+	    // eprintln!("no runs or final run is overlong");
+	    None
+	}
+    }
+
+    fn select_encoding(vals: &[i64]) {	
+    }
+}
+
+#[test]
+fn test_pos_virt_base_and_factor() {
+    assert_eq!(ChunkWriter::pos_virt_base_and_factor(&[2,6,10,14,18]), Some((2,4)));
+}
+
+#[test]
+fn test_neg_virt_base_and_factor() {
+    assert_eq!(ChunkWriter::neg_virt_base_and_factor(&[2,2,3,3,3]), None);
+    assert_eq!(ChunkWriter::neg_virt_base_and_factor(&[2,2,2,3,3,3,4,4,4,5,5]), Some((2,-3)));
+}
+
     
-}
 
+struct LayerReader {
+}
 struct BlockReader {
-    
+    lyr: Box<LayerReader>
 }
-
+struct TrackReader {
+    blk: Box<BlockReader>
+}
 struct ChunkReader {
-    blk: Box<BlockReader>;
-    col: i64,
-    row: i64,
+    trk: Box<TrackReader>
 }
 
 impl ChunkReader {
     fn next(&self, buf: &mut [u8;32]) {}
 }
-
-
-// A file contains a single table: a description of a set of columns, then a set of blocks for those columns.
-// A layer is a self-contained set of blocks across all columns.
-// A block is a max-64k set of rows from one column.
-// A block contains a max-16MiB (24-bit) heap of bytes values, and 1 max-64k dict pointing into it.
-// A block header specifies a min and max value for the column.
-// A block's column is each subdivided into 256 chunks.
-// A chunk covers max-256 rows of 1 column, with a specific encoding; it's the unit of adaptive compression.
-// A chunk is also the unit of dispatch and value-production.
-// That is: every operator consumes a stream of chunks, and produces a stream of chunks.
-//
-// Every chunk has a min and max value (8 + 8 bytes). The dictionary for all chunks of a column is stored at the block level.
-// Every chunk has a byte giving its row count. The max size of a chunk (storing 256 8 byte values) is 2KiB.
-// Every chunk has an 8 byte file offset.
-// Every chunk also has a control byte:
-//
-//    - 1 bit has-a-bitmap
-//    - 2 bits chunk kind
-//    - if explicit:
-//      - 3 bits width
-//      - 1 bit split
-//      - 1 bit dict
-//
-// There are 4 kinds of chunks: 3 implicit, 1 explicit.
-//
-//  - Empty (implicit: nothing)
-//  - Const (implicit: min val)
-//  - Range (implicit: min+(row*max)) -- is this actually useful? Defines regular structures, eg. 1 parent => 4 children is just range(0,4)
-//  - Coded (explicit)
-//
-// Coded chunks are themselves organized into 32-byte / 256-bit
-// _lines_. Loops are unrolled to operate line-at-a-time and chunks
-// are always a multiple of line size. Depending on SIMD hardware this
-// might get 1, 2, 4 or more operations per line.
-//
-// If the has-a-bitmap bit is set, the first line of a coded chunk is
-// a bitmap indicating row occupancy.
-//
-// If the column is bit-typed, then there is only 1 further line: a
-// bitmap, of the bits!
-//
-// Otherwise for int, flo or bin typed columns:
-//
-//   The width bits tell you how wide the data is _logically_ (1..=8 bytes).
-//   The split bit tells you if the data is composed or decomposed into sub-word 1-byte columns.
-//   (If composed, only widths of 1, 2, 4 or 8 are legal).
-//   The dict bit tells you if the encoded values are direct values or dictionary indices.
-//
-// Logically an int, flo or bin-typed column _can_ be a 64-bit word,
-// though they are often dict-coded. An int is an int64. A flo is an
-// f64. Int-typed columns are always FOR-encoded (unsigned positive
-// deltas from the chunk min).
-//
-// A bin describes up to 255 bytes of binary data in an 8 byte
-// word. It is 4 bytes of bin-prefix followed by 1 byte of length and
-// then either
-//
-//   - 3 more bytes of payload, if len <= 7
-//   - 3 bytes / 24 bits of heap offset, if len in 8..=255
