@@ -6,7 +6,7 @@
 // - Int (sliced, 1 byte units, 1..=8 times) -- 8 codes
 // - Flo (direct, 8 byte units) -- 1 code, 1 word body
 // - Bin (subcols: prefixes, hashes, offsets, sizes)
-// 
+//
 // All int forms are FOR-encoded based on the chunk min val.
 //
 // Primitive columns chunks are then arranged into _basic_ column
@@ -61,6 +61,79 @@ struct TrackWriter {
 }
 struct ChunkWriter {
     trk: Box<TrackWriter>
+}
+
+
+enum ChunkIntFormLogical {
+    DirectInt{width: u8}, // 2 bits, specifies u8, u16, u32, or u64
+    SlicedInt{count: u8, shift: u8}, // 6 bits, specifies 3 bit width and 3 bit left-shift
+}
+
+#[repr(u8)]
+enum IntForm {
+    SlicedInt1_0 = 0,    // 0x00000000_000000ff
+    SlicedInt1_1 = 1,    // 0x00000000_0000ff00
+    SlicedInt1_2 = 2,    // 0x00000000_00ff0000
+    SlicedInt1_3 = 3,    // 0x00000000_ff000000
+    SlicedInt1_4 = 4,    // 0x000000ff_00000000
+    SlicedInt1_5 = 5,    // 0x0000ff00_00000000
+    SlicedInt1_6 = 6,    // 0x00ff0000_00000000
+    SlicedInt1_7 = 7,    // 0xff000000_00000000
+
+    SlicedInt2_0 = 8,    // 0x00000000_0000ffff
+    SlicedInt2_1 = 9,    // 0x00000000_00ffff00
+    SlicedInt2_2 = 0xa,  // 0x00000000_ffff0000
+    SlicedInt2_3 = 0xb,  // 0x000000ff_ff000000
+    SlicedInt2_4 = 0xc,  // 0x0000ffff_00000000
+    SlicedInt2_5 = 0xd,  // 0x00ffff00_00000000
+    SlicedInt2_6 = 0xe,  // 0xffff0000_00000000
+
+    SlicedInt3_0 = 0xf,  // 0x00000000_00ffffff
+    SlicedInt3_1 = 0x10, // 0x00000000_ffffff00
+    SlicedInt3_2 = 0x11, // 0x000000ff_ffff0000
+    SlicedInt3_3 = 0x12, // 0x0000ffff_ff000000
+    SlicedInt3_4 = 0x13, // 0x00ffffff_00000000
+    SlicedInt3_5 = 0x14, // 0xffffff00_00000000
+
+    SlicedInt4_0 = 0x15, // 0x00000000_ffffffff
+    SlicedInt4_1 = 0x16, // 0x000000ff_ffffff00
+    SlicedInt4_2 = 0x17, // 0x0000ffff_ffff0000
+    SlicedInt4_3 = 0x18, // 0x00ffffff_ff000000
+    SlicedInt4_4 = 0x19, // 0xffffffff_00000000
+
+    SlicedInt5_0 = 0x1a, // 0x000000ff_ffffffff
+    SlicedInt5_1 = 0x1b, // 0x0000ffff_ffffff00
+    SlicedInt5_2 = 0x1c, // 0x00ffffff_ffff0000
+    SlicedInt5_3 = 0x1d, // 0xffffffff_ff000000
+
+    SlicedInt6_0 = 0x1e, // 0x0000ffff_ffffffff
+    SlicedInt6_1 = 0x1f, // 0x00ffffff_ffffff00
+    SlicedInt6_2 = 0x20, // 0xffffffff_ffff0000
+
+    SlicedInt7_0 = 0x21, // 0x00ffffff_ffffffff
+    SlicedInt7_1 = 0x22, // 0xffffffff_ffffff00
+
+    // No DirectInt8, it's same as SlicedInt1_0
+    DirectInt16 = 0x23,
+    DirectInt32 = 0x24,
+    DirectInt64 = 0x25,
+}
+
+
+enum ChunkForm {
+    SparseBit{count: u8}, // count of set-bits <= 32
+    DirectBit,            // bitmap of 32 bytes = 256 bits
+    DirectFlo,
+    SimpleInt(IntForm),
+    StructBin{prefix: IntForm,
+	      hashed: IntForm,
+	      offset: IntForm,
+	      length: IntForm}
+}
+
+struct ChunkMeta {
+    rows: u8,
+    form: ChunkForm,
 }
 
 impl ChunkWriter {
@@ -146,7 +219,27 @@ impl ChunkWriter {
 	}
     }
 
-    fn select_encoding(vals: &[i64]) {	
+    // Returns the number of bytes, and the left shift, necessary to
+    // reconstruct a given column of u64 values.
+    fn byte_width_and_shift(vals: &[u64]) -> (u8,u8) {
+	let mut accum = 0;
+	let mut shift = 0;
+	let mut width = 0;
+	for v in vals.iter() {
+	    accum |= *v;
+	}
+	while accum != 0 && accum & 0xff == 0 {
+	    shift += 1;
+	    accum >>= 8;
+	}
+	while accum != 0 {
+	    width += 1;
+	    accum >>= 8;
+	}
+	(width, shift)
+    }
+
+    fn select_encoding(vals: &[i64]) {
     }
 }
 
@@ -161,7 +254,17 @@ fn test_neg_virt_base_and_factor() {
     assert_eq!(ChunkWriter::neg_virt_base_and_factor(&[2,2,2,3,3,3,4,4,4,5,5]), Some((2,-3)));
 }
 
-    
+#[test]
+fn test_byte_width_and_shift() {
+    assert_eq!(ChunkWriter::byte_width_and_shift(&[]), (0,0));
+    assert_eq!(ChunkWriter::byte_width_and_shift(&[0]), (0,0));
+    assert_eq!(ChunkWriter::byte_width_and_shift(&[1]), (1,0));
+    assert_eq!(ChunkWriter::byte_width_and_shift(&[0xfff]), (2,0));
+    assert_eq!(ChunkWriter::byte_width_and_shift(&[0xff00]), (1,1));
+    assert_eq!(ChunkWriter::byte_width_and_shift(&[0xff00ff00]), (3,1));
+    assert_eq!(ChunkWriter::byte_width_and_shift(&[0xff00, 0x00ff]), (2,0));
+}
+
 
 struct LayerReader {
 }
