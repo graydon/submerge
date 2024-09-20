@@ -51,38 +51,39 @@
 
 #![allow(dead_code,unused_variables)]
 
-use std::{rc::Rc, io::{Read,Write,Seek,Cursor}};
-use dyn_clone::DynClone;
+use std::{rc::Rc, sync::Arc, io::{Read,Write,Seek,Cursor}};
 
-// TODO: get rid of DynClone and implement the pattern
-// yourself manually, but fallibly, because we need to
-// have a file that is try_clone'd that reopens the same
-// file by name, with its own seek offset, and this can
-// always fail.
+trait TryGetReader {
+    fn try_get_reader(&self) -> Result<Box<dyn Reader>,()>;
+}
 
-trait ReadSeekDynClone : Read + Seek + DynClone {}
-impl<T:Read+Seek+DynClone> ReadSeekDynClone for T {}
-
-trait WriteSeek : Write + Seek {}
-impl<T:Write+Seek> WriteSeek for T {}
-
-trait WriteSeekInto : WriteSeek + Into<Box<dyn ReadSeekDynClone>> {}
-
-impl Into<Box<dyn ReadSeekDynClone>> for Cursor<Vec<u8>> {
-    fn into(self) -> Box<dyn ReadSeekDynClone> {
-	let vec = self.into_inner();
-	let rc: Rc<[u8]> = Rc::from(vec);
-	Box::new(Cursor::new(rc))
+impl TryGetReader for Cursor<Arc<[u8]>> {
+    fn try_get_reader(&self) -> Result<Box<dyn Reader>, ()> {
+	Ok(Box::new(self.clone()))
     }
 }
 
+impl TryGetReader for Cursor<Vec<u8>> {
+    fn try_get_reader(&self) -> Result<Box<dyn Reader>, ()> {
+	let vec = self.clone().into_inner();
+	let rc: Arc<[u8]> = Arc::from(vec);
+	Ok(Box::new(Cursor::new(rc)))
+    }
+}
 
-fn new_vec_writer() -> Box<dyn WriteSeek> {
+trait Reader : Read + Seek + TryGetReader + Send {}
+trait Writer : Write + Seek + TryGetReader + Send {}
+
+impl<T:Read+Seek+TryGetReader + Send> Reader for T {}
+impl<T:Write+Seek+TryGetReader + Send> Writer for T {}
+
+
+fn new_vec_writer() -> Box<dyn Writer> {
     Box::new(Cursor::new(Vec::new()))
 }
 
 struct LayerWriter {
-    wr: Box<dyn WriteSeek>
+    wr: Box<dyn Writer>
 }
 struct BlockWriter {
     lyr: Box<LayerWriter>
