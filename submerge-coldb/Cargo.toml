@@ -8,3 +8,4 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+dyn-clone = "1.0.17"

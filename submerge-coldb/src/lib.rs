@@ -51,7 +51,38 @@
 
 #![allow(dead_code,unused_variables)]
 
+use std::{rc::Rc, io::{Read,Write,Seek,Cursor}};
+use dyn_clone::DynClone;
+
+// TODO: get rid of DynClone and implement the pattern
+// yourself manually, but fallibly, because we need to
+// have a file that is try_clone'd that reopens the same
+// file by name, with its own seek offset, and this can
+// always fail.
+
+trait ReadSeekDynClone : Read + Seek + DynClone {}
+impl<T:Read+Seek+DynClone> ReadSeekDynClone for T {}
+
+trait WriteSeek : Write + Seek {}
+impl<T:Write+Seek> WriteSeek for T {}
+
+trait WriteSeekInto : WriteSeek + Into<Box<dyn ReadSeekDynClone>> {}
+
+impl Into<Box<dyn ReadSeekDynClone>> for Cursor<Vec<u8>> {
+    fn into(self) -> Box<dyn ReadSeekDynClone> {
+	let vec = self.into_inner();
+	let rc: Rc<[u8]> = Rc::from(vec);
+	Box::new(Cursor::new(rc))
+    }
+}
+
+
+fn new_vec_writer() -> Box<dyn WriteSeek> {
+    Box::new(Cursor::new(Vec::new()))
+}
+
 struct LayerWriter {
+    wr: Box<dyn WriteSeek>
 }
 struct BlockWriter {
     lyr: Box<LayerWriter>
