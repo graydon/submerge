@@ -51,36 +51,8 @@
 
 #![allow(dead_code,unused_variables)]
 
-use std::{rc::Rc, sync::Arc, io::{Read,Write,Seek,Cursor}};
-
-trait TryGetReader {
-    fn try_get_reader(&self) -> Result<Box<dyn Reader>,()>;
-}
-
-impl TryGetReader for Cursor<Arc<[u8]>> {
-    fn try_get_reader(&self) -> Result<Box<dyn Reader>, ()> {
-	Ok(Box::new(self.clone()))
-    }
-}
-
-impl TryGetReader for Cursor<Vec<u8>> {
-    fn try_get_reader(&self) -> Result<Box<dyn Reader>, ()> {
-	let vec = self.clone().into_inner();
-	let rc: Arc<[u8]> = Arc::from(vec);
-	Ok(Box::new(Cursor::new(rc)))
-    }
-}
-
-trait Reader : Read + Seek + TryGetReader + Send {}
-trait Writer : Write + Seek + TryGetReader + Send {}
-
-impl<T:Read+Seek+TryGetReader + Send> Reader for T {}
-impl<T:Write+Seek+TryGetReader + Send> Writer for T {}
-
-
-fn new_vec_writer() -> Box<dyn Writer> {
-    Box::new(Cursor::new(Vec::new()))
-}
+mod ioutil;
+use ioutil::{Reader,Writer};
 
 struct LayerWriter {
     wr: Box<dyn Writer>
@@ -94,7 +66,6 @@ struct TrackWriter {
 struct ChunkWriter {
     trk: Box<TrackWriter>
 }
-
 
 enum ChunkIntFormLogical {
     DirectInt{width: u8}, // 2 bits, specifies u8, u16, u32, or u64
