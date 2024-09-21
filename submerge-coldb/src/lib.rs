@@ -54,17 +54,17 @@
 mod ioutil;
 use ioutil::{Reader,Writer};
 
-struct LayerWriter {
-    wr: Box<dyn Writer>
+struct LayerWriter<W:Writer> {
+    wr: Box<W>
 }
-struct BlockWriter {
-    lyr: Box<LayerWriter>
+struct BlockWriter<W:Writer> {
+    lyr: Box<LayerWriter<W>>
 }
-struct TrackWriter {
-    blk: Box<BlockWriter>
+struct TrackWriter<W:Writer> {
+    blk: Box<BlockWriter<W>>
 }
-struct ChunkWriter {
-    trk: Box<TrackWriter>
+struct ChunkWriter<W:Writer> {
+    trk: Box<TrackWriter<W>>
 }
 
 enum ChunkIntFormLogical {
@@ -139,7 +139,7 @@ struct ChunkMeta {
     form: ChunkForm,
 }
 
-impl ChunkWriter {
+impl<W:Writer> ChunkWriter<W> {
 
     // A chunk should use positive-virt encoding if every value is
     // row*n for some n. We should notice this is _not_ the case after
@@ -246,26 +246,28 @@ impl ChunkWriter {
     }
 }
 
+type MemChunkWriter = ChunkWriter<ioutil::MemWriter>;
+
 #[test]
 fn test_pos_virt_base_and_factor() {
-    assert_eq!(ChunkWriter::pos_virt_base_and_factor(&[2,6,10,14,18]), Some((2,4)));
+    assert_eq!(MemChunkWriter::pos_virt_base_and_factor(&[2,6,10,14,18]), Some((2,4)));
 }
 
 #[test]
 fn test_neg_virt_base_and_factor() {
-    assert_eq!(ChunkWriter::neg_virt_base_and_factor(&[2,2,3,3,3]), None);
-    assert_eq!(ChunkWriter::neg_virt_base_and_factor(&[2,2,2,3,3,3,4,4,4,5,5]), Some((2,-3)));
+    assert_eq!(MemChunkWriter::neg_virt_base_and_factor(&[2,2,3,3,3]), None);
+    assert_eq!(MemChunkWriter::neg_virt_base_and_factor(&[2,2,2,3,3,3,4,4,4,5,5]), Some((2,-3)));
 }
 
 #[test]
 fn test_byte_width_and_shift() {
-    assert_eq!(ChunkWriter::byte_width_and_shift(&[]), (0,0));
-    assert_eq!(ChunkWriter::byte_width_and_shift(&[0]), (0,0));
-    assert_eq!(ChunkWriter::byte_width_and_shift(&[1]), (1,0));
-    assert_eq!(ChunkWriter::byte_width_and_shift(&[0xfff]), (2,0));
-    assert_eq!(ChunkWriter::byte_width_and_shift(&[0xff00]), (1,1));
-    assert_eq!(ChunkWriter::byte_width_and_shift(&[0xff00ff00]), (3,1));
-    assert_eq!(ChunkWriter::byte_width_and_shift(&[0xff00, 0x00ff]), (2,0));
+    assert_eq!(MemChunkWriter::byte_width_and_shift(&[]), (0,0));
+    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0]), (0,0));
+    assert_eq!(MemChunkWriter::byte_width_and_shift(&[1]), (1,0));
+    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xfff]), (2,0));
+    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00]), (1,1));
+    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00ff00]), (3,1));
+    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00, 0x00ff]), (2,0));
 }
 
 
