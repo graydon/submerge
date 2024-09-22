@@ -1,13 +1,11 @@
-use backtrace_error::DynBacktraceError as Error;
+use submerge_base::{Error,err};
 use serde::{Serialize, Deserialize};
 use core::fmt::Debug;
 use core::hash::Hash;
 use std::collections::{BTreeMap, VecDeque};
 use submerge_lang::{Expr, Path, Vals};
 
-fn err(msg: &str) -> Error {
-    std::io::Error::other(msg).into()
-}
+
 
 pub trait Data: Clone + Debug + Eq + PartialEq + Ord + Hash {}
 impl<T> Data for T where T: Clone + Debug + Eq + PartialEq + Ord + Hash {}
@@ -114,8 +112,7 @@ impl Node {
 
     pub fn send_msg(&mut self, msg: Msg) -> Result<(), Error> {
         let dst = msg.dst;
-        let mut buf = Vec::new();
-        msg.enc(&mut buf)?;
+        let buf = rmp_serde::to_vec(&msg)?;
         self.ioqueues
             .outgoing
             .push_back((dst, buf.into_boxed_slice()));
@@ -182,8 +179,7 @@ impl Node {
     }
 
     fn decode_msg(&mut self, src: NodeID, buf: Box<[u8]>) -> Result<(), Error> {
-        let mut rd = buf.as_ref();
-        let msg = Box::new(Msg::dec(&mut rd)?);
+        let msg: Box<Msg> = Box::new(rmp_serde::from_slice(buf.as_ref())?);
         if msg.src != src {
             return Err(err("Mismatched source"));
         }

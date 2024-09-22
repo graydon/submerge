@@ -116,20 +116,20 @@
 // the new one.
 
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Serialize, Deserialize};
 use submerge_eval::Evaluator;
 use submerge_lang::{Expr, Tab, Path, Vals};
 use submerge_net::{NodeID, RealmTime, NodeTime, Duration};
 
-use backtrace_error::DynBacktraceError as Error;
+use submerge_base::Error;
 
 pub type NodeSet = BTreeSet<NodeID>; 
 
 mod paxos;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct Config {
     // The set of nodes to replicate transactions to
     nodes: NodeSet,
@@ -149,27 +149,27 @@ pub struct Config {
 // so will create an increasingly significant synchronization barrier, inhibiting
 // parallel execution through it.
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 struct Footprint {
     reads: Vec<Path>,
     writes: Vec<Path>
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct Thunk {
     vals: Tab,
     expr: Expr,
     foot: Footprint
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Transaction {
     time: RealmTime,
     thunk: Thunk,
     state: State
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub enum Record {
     Resolved(Vals),
     Unresolved(Thunk)
@@ -181,7 +181,7 @@ pub trait Store {
     fn abort(&self, path: Path) -> Result<(), Error>;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 enum PutTry {
     Nothing,
     Attempt{count:i64, time:NodeTime},
@@ -189,7 +189,7 @@ enum PutTry {
 }
 
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum State {
     // Replicating thunks into nodes
     Put { nodes: BTreeMap<NodeID,PutTry> },
@@ -198,7 +198,7 @@ enum State {
     // Waiting for the watermark to advance past us
     Seq,
     // Running the transaction thunk
-    Run { eval: Evaluator }
+    Run { eval: Evaluator },
     // Complete
     End
 }

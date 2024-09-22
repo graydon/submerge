@@ -11,7 +11,8 @@ publish.workspace = true
 submerge-lang = { path = "../submerge-lang" }
 submerge-eval = { path = "../submerge-eval" }
 submerge-net = { path = "../submerge-net" }
-backtrace-error = "0.5.0"
+submerge-base = { path = "../submerge-base" }
+serde.workspace = true
 
 [dev-dependencies]
 stateright = "0.30.2"

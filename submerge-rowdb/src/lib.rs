@@ -3,6 +3,7 @@
 pub struct Database {
     db: redb::Database
 }
+/*
 impl Database {
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
@@ -30,3 +31,4 @@ impl Database {
         Ok(())
     }
 }
+    */

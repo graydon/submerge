@@ -1,9 +1,19 @@
 use std::{
-    fs::File,
-    io::{BufReader, BufWriter, Cursor, Read, Result, Seek, Write},
-    path::PathBuf,
-    sync::Arc,
+    fs::File, io::{BufReader, BufWriter, Cursor, Read, Seek, Write}, path::{Display, PathBuf}, sync::Arc
 };
+use submerge_base::Result;
+use super::annotations::Annotations;
+
+pub(crate) trait RangeExt {
+    fn len(&self) -> i64;
+}
+impl RangeExt for std::ops::Range<i64> {
+    fn len(&self) -> i64 {
+        self.end - self.start
+    }
+}
+
+// Reader and Writer
 
 pub trait Reader: Read + Seek + Send + Sized {
     fn try_clone_independent(&self) -> Result<Self>;
@@ -12,6 +22,22 @@ pub trait Reader: Read + Seek + Send + Sized {
 pub trait Writer: Write + Seek + Send + Sized {
     type PairedReader: Reader;
     fn try_into_reader(self) -> Result<Self::PairedReader>;
+    fn pos(&mut self) -> Result<i64> {
+        Ok(self.stream_position()?.try_into()?)
+    }
+    fn get_annotations(&mut self) -> &mut Annotations;
+    #[cfg(test)]
+    fn annotate_pos(&mut self) -> Result<i64> { self.pos() }
+    #[cfg(test)]
+    fn annotate_to_pos_from(&mut self, name: &str, start: i64) -> Result<()> {
+        let pos = self.annotate_pos()?;
+        self.get_annotations().push((start..pos).into(), name);
+        Ok(())
+    }
+    #[cfg(not(test))]
+    fn annotate_pos(&mut self) -> Result<i64> { Ok(0) }
+    #[cfg(not(test))]
+    fn annotate_to_pos_from(&mut self, name: &str, start: i64) -> Result<()> { Ok(()) }
 }
 
 // MemReader
@@ -36,13 +62,13 @@ impl From<Vec<u8>> for MemReader {
 }
 
 impl Read for MemReader {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.mem.read(buf)
     }
 }
 
 impl Seek for MemReader {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> Result<u64> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         self.mem.seek(pos)
     }
 }
@@ -57,20 +83,30 @@ impl Reader for MemReader {
 // MemWriter
 
 pub struct MemWriter {
+    annotations: Annotations,
     mem: Cursor<Vec<u8>>,
+}
+
+impl MemWriter {
+    pub fn new() -> Self {
+        Self {
+            annotations: Annotations::new(),
+            mem: Cursor::new(Vec::new()),
+        }
+    }
 }
 
 impl Write for MemWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.mem.write(buf)
     }
-    fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self) -> std::io::Result<()> {
         self.mem.flush()
     }
 }
 
 impl Seek for MemWriter {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> Result<u64> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         self.mem.seek(pos)
     }
 }
@@ -83,6 +119,9 @@ impl Writer for MemWriter {
         Ok(MemReader {
             mem: Cursor::new(rc),
         })
+    }
+    fn get_annotations(&mut self) -> &mut Annotations {
+        &mut self.annotations
     }
 }
 
@@ -101,13 +140,13 @@ impl FileReader {
     }
 }
 impl Read for FileReader {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.file.read(buf)
     }
 }
 
 impl Seek for FileReader {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> Result<u64> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         self.file.seek(pos)
     }
 }
@@ -123,6 +162,7 @@ impl Reader for FileReader {
 pub struct FileWriter {
     file: BufWriter<File>,
     path: PathBuf,
+    annotations: Annotations,
 }
 
 impl FileWriter {
@@ -133,7 +173,8 @@ impl FileWriter {
             .open(&path)?;
         let file = BufWriter::new(file);
         let path = path.to_owned();
-        Ok(Self { file, path })
+        let annotations = Annotations::new();
+        Ok(Self { file, path, annotations })
     }
 }
 
@@ -141,12 +182,12 @@ impl Write for FileWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         self.file.write(buf)
     }
-    fn flush(&mut self) -> Result<()> {
+    fn flush(&mut self) -> std::io::Result<()> {
         self.file.flush()
     }
 }
 impl Seek for FileWriter {
-    fn seek(&mut self, pos: std::io::SeekFrom) -> Result<u64> {
+    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
         self.file.seek(pos)
     }
 }
@@ -154,7 +195,7 @@ impl Seek for FileWriter {
 impl Writer for FileWriter {
     type PairedReader = FileReader;
     fn try_into_reader(self) -> Result<Self::PairedReader> {
-        let Self { mut file, path } = self;
+        let Self { mut file, path, .. } = self;
         // Make extra sure we've flushed-and-closed before
         // opening to read.
         file.flush()?;
@@ -162,5 +203,8 @@ impl Writer for FileWriter {
         file.sync_all()?;
         drop(file);
         Ok(FileReader::try_open_existing(path)?)
+    }
+    fn get_annotations(&mut self) -> &mut Annotations {
+        &mut self.annotations
     }
 }

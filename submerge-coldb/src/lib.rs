@@ -51,8 +51,14 @@
 
 #![allow(dead_code,unused_variables)]
 
+use std::io::Write;
+
+use test_log::test;
 mod ioutil;
 use ioutil::{Reader,Writer};
+use submerge_base::Result;
+
+mod annotations;
 
 struct LayerWriter<W:Writer> {
     wr: Box<W>
@@ -268,6 +274,20 @@ fn test_byte_width_and_shift() {
     assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00]), (1,1));
     assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00ff00]), (3,1));
     assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00, 0x00ff]), (2,0));
+}
+
+#[test]
+fn test_annotations() -> Result<()> {
+	let mut w = ioutil::MemWriter::new();
+	let vals = vec![1,2,3,4,5,6,7,8];
+	let pos = w.annotate_pos()?;
+	w.write_all(&vals[0..4])?;
+	w.annotate_to_pos_from("span 1", pos)?;
+	let pos = w.annotate_pos()?;
+	w.write_all(&vals[4..])?;
+	w.annotate_to_pos_from("span 2", pos)?;
+	eprintln!("dump:\n{}", w.get_annotations().render_hexdump(vals.as_slice())?);
+	Ok(())
 }
 
 

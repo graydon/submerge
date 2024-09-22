@@ -168,9 +168,9 @@ pub struct Vm {
 pub struct Frame {
     ctx: Vec<Tab>,
     scalar_bit_regs: Vec<u64>,
-    vector_bit_regs: Vec<Box<dyn Iterator<Item=u64>>>,
+    //vector_bit_regs: Vec<Box<dyn Iterator<Item=u64>>>,
     bin_regs: Vec<u64>,
-    flo_regs: Vec<f64>,
-    int_regs: Vec<i64>
+    //flo_regs: Vec<f64>,
+    int_regs: Vec<i64>,
     pc: usize,
 }

@@ -1,9 +1,13 @@
 [workspace]
 resolver = "2"
-# 16 subsystems, max 16kloc each, 256kloc total.
-# 16kloc is a good size for a single developer to understand and maintain.
 members = [
-    "submerge",         # Top level client-or-server executable.
+    "submerge",         # Top level client-or-server executable, should be _fairly_ small.
+                        # Also not assumed to be only user of the library. Illustrative.
+
+    # 16 subsystems, max 16kloc (non-test) each, 256kloc total.
+    # 16kloc is big enough to do something useful but not get out of control.
+    # 256kloc if well-modularized can mostly fit in one person's head.
+
     "submerge-ui",      # TUI, forms, printing, GUI toolkit support, etc.
     "submerge-net",     # Client-server and server-server networking.
     "submerge-txn",     # Transactions, replication, consistency, time, etc.
@@ -19,6 +23,7 @@ members = [
     "submerge-adapt",   # External system and format interop, pubsub, adaptors.
     "submerge-admin",   # Admin, config, system policies, logging, audit, metrics, etc.
     "submerge-money",   # User-billing, payment, subscription, licensing, commissions.
+    "submerge-base",    # Base types and ubiquitous (imported/used-by-all) definitions.
 ]
 
 [workspace.package]
@@ -28,3 +33,14 @@ description = "Experimental database thing"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 publish = false
+
+[workspace.dependencies]
+tracing = {version = "0.1.40", default-features = false, features = ["log"]}
+rmp = "0.8.14"
+rmp-serde = "1.3.0"
+serde = { version = "1.0.203", features = ["derive"] }
+backtrace-error = "0.5.0"
+
+# These are mainly used as dev-deps
+test-log = {version = "0.2.16", default-features = false, features = ["trace"]}
+tracing-tracy = "0.11.2"
