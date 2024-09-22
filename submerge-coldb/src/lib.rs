@@ -51,26 +51,51 @@
 
 #![allow(dead_code, unused_variables)]
 
-use std::io::Write;
+use std::{ops::Range,io::Write};
 
 #[cfg(test)]
 mod test;
 
 mod ioutil;
-use ioutil::{Reader, Writer};
+use ioutil::{Reader, Writer, RangeExt};
 use submerge_base::Result;
 
+struct LayerMeta {
+    rows: u64,
+    cols: u64,
+    block_ranges: Vec<Range<i64>>,
+}
 struct LayerWriter<W: Writer> {
     wr: Box<W>,
+    range: Range<i64>,
+    meta: LayerMeta,
+}
+struct BlockMeta {
+    track_ranges: Vec<Range<i64>>,
 }
 struct BlockWriter<W: Writer> {
     lyr: Box<LayerWriter<W>>,
+    block_num: usize,
+    range: Range<i64>,
+    meta: BlockMeta,
+}
+struct TrackMeta {
+    chunk_ranges: Vec<Range<i64>>,
 }
 struct TrackWriter<W: Writer> {
     blk: Box<BlockWriter<W>>,
+    track_num: usize,
+    range: Range<i64>,
+    meta: TrackMeta,
+}
+struct ChunkMeta {
+    rows: u8,
+    form: ChunkForm,
 }
 struct ChunkWriter<W: Writer> {
     trk: Box<TrackWriter<W>>,
+    chunk_num: usize,
+    meta: ChunkMeta,
 }
 
 enum ChunkIntFormLogical {
@@ -141,11 +166,6 @@ enum ChunkForm {
         offset: IntForm,
         length: IntForm,
     },
-}
-
-struct ChunkMeta {
-    rows: u8,
-    form: ChunkForm,
 }
 
 impl<W: Writer> ChunkWriter<W> {
