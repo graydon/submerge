@@ -1,11 +1,8 @@
-#[cfg(test)]
 use submerge_base::Result;
 use std::ops::Range;
-#[cfg(test)]
-use super::ioutil::RangeExt;
+use crate::ioutil::RangeExt;
 
 pub struct Annotations {
-    #[cfg(test)]
     pub(crate) annotations: Vec<(Range<i64>, String)>,
 }
 
@@ -103,4 +100,7 @@ impl Annotations {
         }
         Ok(s)
     }
+}
+
+trait AnnotateWriter {
 }

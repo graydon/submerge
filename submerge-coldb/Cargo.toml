@@ -9,4 +9,7 @@ publish.workspace = true
 
 [dependencies]
 submerge-base = { path = "../submerge-base" }
+funty.workspace = true
+
+[dev-dependencies]
 test-log.workspace = true

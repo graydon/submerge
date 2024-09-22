@@ -2,7 +2,16 @@ use std::{
     fs::File, io::{BufReader, BufWriter, Cursor, Read, Seek, Write}, path::{Display, PathBuf}, sync::Arc
 };
 use submerge_base::Result;
-use super::annotations::Annotations;
+
+#[cfg(test)]
+use crate::test::annotations::Annotations;
+#[cfg(not(test))]
+struct Annotations;
+#[cfg(not(test))]
+impl Annotations {
+    fn new() -> Self { Self }
+    fn push(&mut self, _range: std::ops::Range<i64>, _name: &str) {}
+}
 
 pub(crate) trait RangeExt {
     fn len(&self) -> i64;
@@ -34,10 +43,35 @@ pub trait Writer: Write + Seek + Send + Sized {
         self.get_annotations().push((start..pos).into(), name);
         Ok(())
     }
+    #[cfg(test)]
+    fn annotate<T>(&mut self, name: &str, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        let start = self.annotate_pos()?;
+        let ok = f(self)?;
+        self.annotate_to_pos_from(name, start)?;
+        Ok(ok)
+    }
     #[cfg(not(test))]
     fn annotate_pos(&mut self) -> Result<i64> { Ok(0) }
     #[cfg(not(test))]
     fn annotate_to_pos_from(&mut self, name: &str, start: i64) -> Result<()> { Ok(()) }
+    #[cfg(not(test))]
+    fn annotate<T>(&mut self, name: &str, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        f(self)
+    }
+    fn write_annotated_byte_slice(&mut self, name: &str, val: &[u8]) -> Result<()> {
+        self.annotate(name, |w| Ok(w.write_all(val)?))
+    }
+    fn write_annotated_num<const N: usize, T:funty::Numeric<Bytes=[u8;N]>>(&mut self, name: &str, val: T) -> Result<()> {
+        self.write_annotated_byte_slice(name, &val.to_le_bytes())
+    }
+    fn write_annotated_num_slice<const N: usize, T:funty::Numeric<Bytes=[u8;N]>>(&mut self, name: &str, val: &[T]) -> Result<()> {
+        self.annotate(name, |w| {
+            for &v in val {
+                w.write_all(&v.to_le_bytes())?;
+            }
+            Ok(())
+        })
+    }
 }
 
 // MemReader
@@ -93,6 +127,10 @@ impl MemWriter {
             annotations: Annotations::new(),
             mem: Cursor::new(Vec::new()),
         }
+    }
+    #[cfg(test)]
+    pub(crate) fn render_annotations(&self) -> Result<String> {
+        self.annotations.render_hexdump(self.mem.get_ref().as_slice())
     }
 }
 

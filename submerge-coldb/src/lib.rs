@@ -49,53 +49,53 @@
 // Track per column, contains
 // Chunk sequence
 
-#![allow(dead_code,unused_variables)]
+#![allow(dead_code, unused_variables)]
 
 use std::io::Write;
 
-use test_log::test;
+#[cfg(test)]
+mod test;
+
 mod ioutil;
-use ioutil::{Reader,Writer};
+use ioutil::{Reader, Writer};
 use submerge_base::Result;
 
-mod annotations;
-
-struct LayerWriter<W:Writer> {
-    wr: Box<W>
+struct LayerWriter<W: Writer> {
+    wr: Box<W>,
 }
-struct BlockWriter<W:Writer> {
-    lyr: Box<LayerWriter<W>>
+struct BlockWriter<W: Writer> {
+    lyr: Box<LayerWriter<W>>,
 }
-struct TrackWriter<W:Writer> {
-    blk: Box<BlockWriter<W>>
+struct TrackWriter<W: Writer> {
+    blk: Box<BlockWriter<W>>,
 }
-struct ChunkWriter<W:Writer> {
-    trk: Box<TrackWriter<W>>
+struct ChunkWriter<W: Writer> {
+    trk: Box<TrackWriter<W>>,
 }
 
 enum ChunkIntFormLogical {
-    DirectInt{width: u8}, // 2 bits, specifies u8, u16, u32, or u64
-    SlicedInt{count: u8, shift: u8}, // 6 bits, specifies 3 bit width and 3 bit left-shift
+    DirectInt { width: u8 },            // 2 bits, specifies u8, u16, u32, or u64
+    SlicedInt { count: u8, shift: u8 }, // 6 bits, specifies 3 bit width and 3 bit left-shift
 }
 
 #[repr(u8)]
 enum IntForm {
-    SlicedInt1_0 = 0,    // 0x00000000_000000ff
-    SlicedInt1_1 = 1,    // 0x00000000_0000ff00
-    SlicedInt1_2 = 2,    // 0x00000000_00ff0000
-    SlicedInt1_3 = 3,    // 0x00000000_ff000000
-    SlicedInt1_4 = 4,    // 0x000000ff_00000000
-    SlicedInt1_5 = 5,    // 0x0000ff00_00000000
-    SlicedInt1_6 = 6,    // 0x00ff0000_00000000
-    SlicedInt1_7 = 7,    // 0xff000000_00000000
+    SlicedInt1_0 = 0, // 0x00000000_000000ff
+    SlicedInt1_1 = 1, // 0x00000000_0000ff00
+    SlicedInt1_2 = 2, // 0x00000000_00ff0000
+    SlicedInt1_3 = 3, // 0x00000000_ff000000
+    SlicedInt1_4 = 4, // 0x000000ff_00000000
+    SlicedInt1_5 = 5, // 0x0000ff00_00000000
+    SlicedInt1_6 = 6, // 0x00ff0000_00000000
+    SlicedInt1_7 = 7, // 0xff000000_00000000
 
-    SlicedInt2_0 = 8,    // 0x00000000_0000ffff
-    SlicedInt2_1 = 9,    // 0x00000000_00ffff00
-    SlicedInt2_2 = 0xa,  // 0x00000000_ffff0000
-    SlicedInt2_3 = 0xb,  // 0x000000ff_ff000000
-    SlicedInt2_4 = 0xc,  // 0x0000ffff_00000000
-    SlicedInt2_5 = 0xd,  // 0x00ffff00_00000000
-    SlicedInt2_6 = 0xe,  // 0xffff0000_00000000
+    SlicedInt2_0 = 8,   // 0x00000000_0000ffff
+    SlicedInt2_1 = 9,   // 0x00000000_00ffff00
+    SlicedInt2_2 = 0xa, // 0x00000000_ffff0000
+    SlicedInt2_3 = 0xb, // 0x000000ff_ff000000
+    SlicedInt2_4 = 0xc, // 0x0000ffff_00000000
+    SlicedInt2_5 = 0xd, // 0x00ffff00_00000000
+    SlicedInt2_6 = 0xe, // 0xffff0000_00000000
 
     SlicedInt3_0 = 0xf,  // 0x00000000_00ffffff
     SlicedInt3_1 = 0x10, // 0x00000000_ffffff00
@@ -128,16 +128,19 @@ enum IntForm {
     DirectInt64 = 0x25,
 }
 
-
 enum ChunkForm {
-    SparseBit{count: u8}, // count of set-bits <= 32
-    DirectBit,            // bitmap of 32 bytes = 256 bits
+    SparseBit {
+        count: u8,
+    }, // count of set-bits <= 32
+    DirectBit, // bitmap of 32 bytes = 256 bits
     DirectFlo,
     SimpleInt(IntForm),
-    StructBin{prefix: IntForm,
-	      hashed: IntForm,
-	      offset: IntForm,
-	      length: IntForm}
+    StructBin {
+        prefix: IntForm,
+        hashed: IntForm,
+        offset: IntForm,
+        length: IntForm,
+    },
 }
 
 struct ChunkMeta {
@@ -145,164 +148,122 @@ struct ChunkMeta {
     form: ChunkForm,
 }
 
-impl<W:Writer> ChunkWriter<W> {
-
+impl<W: Writer> ChunkWriter<W> {
     // A chunk should use positive-virt encoding if every value is
     // row*n for some n. We should notice this is _not_ the case after
     // the second iteration of looking.
-    fn pos_virt_base_and_factor(vals: &[i64]) -> Option<(i64,i64)> {
-	// For 0 or 1 value, we prefer encoding as prim.
-	if vals.len() < 2 {
-	    return None;
-	}
-	let mut base: i64 = 0;
-	let mut prev: i64 = 0;
-	let mut diff: i64 = 0;
-	for (i, val) in vals.iter().enumerate() {
-	    if i == 0 {
-		base = *val;
-		prev = *val;
-	    } else if i == 1 {
-		diff = *val - prev;
-		prev = *val;
-	    } else if diff == *val - prev {
-		prev = *val;
-	    } else {
-		// Pattern does not hold.
-		return None;
-	    }
-	}
-	Some((base, diff))
+    fn pos_virt_base_and_factor(vals: &[i64]) -> Option<(i64, i64)> {
+        // For 0 or 1 value, we prefer encoding as prim.
+        if vals.len() < 2 {
+            return None;
+        }
+        let mut base: i64 = 0;
+        let mut prev: i64 = 0;
+        let mut diff: i64 = 0;
+        for (i, val) in vals.iter().enumerate() {
+            if i == 0 {
+                base = *val;
+                prev = *val;
+            } else if i == 1 {
+                diff = *val - prev;
+                prev = *val;
+            } else if diff == *val - prev {
+                prev = *val;
+            } else {
+                // Pattern does not hold.
+                return None;
+            }
+        }
+        Some((base, diff))
     }
 
     // A chunk should use negative-virt encoding if every value is
     // row/n for some n, which is true exactly when it's a sequence
     // of n-length runs of values that ascend by 1 after each run.
-    fn neg_virt_base_and_factor(vals: &[i64]) -> Option<(i64,i64)> {
-	// For 0 or 1 value, we prefer encoding as prim.
-	// eprintln!("examining {:?}", vals);
-	if vals.len() < 2 {
-	    // eprintln!("too few vals");
-	    return None;
-	}
-	let mut base = 0;
-	let mut prev = 0;
-	let mut run = 0;
-	let mut curr_run_len = 0;
-	let mut prev_run_len = 0;
-	for (i, val) in vals.iter().enumerate() {
-	    if i == 0 {
-		base = *val;
-		prev = *val;
-		curr_run_len = 1;
-	    } else if prev == *val {
-		// Run coninues.
-		prev = *val;
-		curr_run_len += 1;
-	    } else if prev + 1 != *val {
-		// Run transition that is too big.
-		// eprintln!("run transition too big at vals[{}] = {}: prev={}", i, *val, prev);
-		return None;
-	    } else {
-		// Possibly-valid run transition.
-		if run != 0 && prev_run_len != curr_run_len {
-		    // Run lengths differ.
-		    // eprintln!("run lengths differ at vals[{}] = {}: prev={}, run={},
-		    //           prev_run_len={}, curr_run_len={}", i, *val, prev, run,
-		    //           prev_run_len, curr_run_len);
-		    return None;
-		}
-		// Start new run.
-		prev = *val;
-		prev_run_len = curr_run_len;
-		curr_run_len = 1;
-		run += 1;
-	    }
-	}
-	if run != 0 && curr_run_len <= prev_run_len {
-	    // Allow final run to be short
-	    Some((base,-prev_run_len))
-	} else {
-	    // eprintln!("no runs or final run is overlong");
-	    None
-	}
+    fn neg_virt_base_and_factor(vals: &[i64]) -> Option<(i64, i64)> {
+        // For 0 or 1 value, we prefer encoding as prim.
+        // eprintln!("examining {:?}", vals);
+        if vals.len() < 2 {
+            // eprintln!("too few vals");
+            return None;
+        }
+        let mut base = 0;
+        let mut prev = 0;
+        let mut run = 0;
+        let mut curr_run_len = 0;
+        let mut prev_run_len = 0;
+        for (i, val) in vals.iter().enumerate() {
+            if i == 0 {
+                base = *val;
+                prev = *val;
+                curr_run_len = 1;
+            } else if prev == *val {
+                // Run coninues.
+                prev = *val;
+                curr_run_len += 1;
+            } else if prev + 1 != *val {
+                // Run transition that is too big.
+                // eprintln!("run transition too big at vals[{}] = {}: prev={}", i, *val, prev);
+                return None;
+            } else {
+                // Possibly-valid run transition.
+                if run != 0 && prev_run_len != curr_run_len {
+                    // Run lengths differ.
+                    // eprintln!("run lengths differ at vals[{}] = {}: prev={}, run={},
+                    //           prev_run_len={}, curr_run_len={}", i, *val, prev, run,
+                    //           prev_run_len, curr_run_len);
+                    return None;
+                }
+                // Start new run.
+                prev = *val;
+                prev_run_len = curr_run_len;
+                curr_run_len = 1;
+                run += 1;
+            }
+        }
+        if run != 0 && curr_run_len <= prev_run_len {
+            // Allow final run to be short
+            Some((base, -prev_run_len))
+        } else {
+            // eprintln!("no runs or final run is overlong");
+            None
+        }
     }
 
     // Returns the number of bytes, and the left shift, necessary to
     // reconstruct a given column of u64 values.
-    fn byte_width_and_shift(vals: &[u64]) -> (u8,u8) {
-	let mut accum = 0;
-	let mut shift = 0;
-	let mut width = 0;
-	for v in vals.iter() {
-	    accum |= *v;
-	}
-	while accum != 0 && accum & 0xff == 0 {
-	    shift += 1;
-	    accum >>= 8;
-	}
-	while accum != 0 {
-	    width += 1;
-	    accum >>= 8;
-	}
-	(width, shift)
+    fn byte_width_and_shift(vals: &[u64]) -> (u8, u8) {
+        let mut accum = 0;
+        let mut shift = 0;
+        let mut width = 0;
+        for v in vals.iter() {
+            accum |= *v;
+        }
+        while accum != 0 && accum & 0xff == 0 {
+            shift += 1;
+            accum >>= 8;
+        }
+        while accum != 0 {
+            width += 1;
+            accum >>= 8;
+        }
+        (width, shift)
     }
 
-    fn select_encoding(vals: &[i64]) {
-    }
+    fn select_encoding(vals: &[i64]) {}
 }
 
-type MemChunkWriter = ChunkWriter<ioutil::MemWriter>;
-
-#[test]
-fn test_pos_virt_base_and_factor() {
-    assert_eq!(MemChunkWriter::pos_virt_base_and_factor(&[2,6,10,14,18]), Some((2,4)));
-}
-
-#[test]
-fn test_neg_virt_base_and_factor() {
-    assert_eq!(MemChunkWriter::neg_virt_base_and_factor(&[2,2,3,3,3]), None);
-    assert_eq!(MemChunkWriter::neg_virt_base_and_factor(&[2,2,2,3,3,3,4,4,4,5,5]), Some((2,-3)));
-}
-
-#[test]
-fn test_byte_width_and_shift() {
-    assert_eq!(MemChunkWriter::byte_width_and_shift(&[]), (0,0));
-    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0]), (0,0));
-    assert_eq!(MemChunkWriter::byte_width_and_shift(&[1]), (1,0));
-    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xfff]), (2,0));
-    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00]), (1,1));
-    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00ff00]), (3,1));
-    assert_eq!(MemChunkWriter::byte_width_and_shift(&[0xff00, 0x00ff]), (2,0));
-}
-
-#[test]
-fn test_annotations() -> Result<()> {
-	let mut w = ioutil::MemWriter::new();
-	let vals = vec![1,2,3,4,5,6,7,8];
-	let pos = w.annotate_pos()?;
-	w.write_all(&vals[0..4])?;
-	w.annotate_to_pos_from("span 1", pos)?;
-	let pos = w.annotate_pos()?;
-	w.write_all(&vals[4..])?;
-	w.annotate_to_pos_from("span 2", pos)?;
-	eprintln!("dump:\n{}", w.get_annotations().render_hexdump(vals.as_slice())?);
-	Ok(())
-}
-
-
-struct LayerReader {
-}
+struct LayerReader {}
 struct BlockReader {
-    lyr: Box<LayerReader>
+    lyr: Box<LayerReader>,
 }
 struct TrackReader {
-    blk: Box<BlockReader>
+    blk: Box<BlockReader>,
 }
 struct ChunkReader {
-    trk: Box<TrackReader>
+    trk: Box<TrackReader>,
 }
 
 impl ChunkReader {
-    fn next(&self, buf: &mut [u8;32]) {}
+    fn next(&self, buf: &mut [u8; 32]) {}
 }
