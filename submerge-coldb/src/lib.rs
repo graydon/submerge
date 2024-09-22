@@ -9,10 +9,14 @@
 //
 // All int forms are FOR-encoded based on the chunk min val.
 //
-// Primitive columns chunks are then arranged into _basic_ column
-// chunks, which can have multi-column _encoding_ substructure but add
-// no _logical_ substructure (at the language level). Also the basic
-// column chunk structure may vary chunk-to-chunk in the same column.
+// A sequence of up to 256 column chunks is then placed into a _track_,
+// which can have multi-column _encoding_ substructure but add
+// no _logical_ substructure (at the language level). A track is also
+// local to a block, so that any bins in its chunks use offsets inside
+// the block's heap. Dictionaries are also formed at this level which
+// means a dict can only have 64k entries and the definitions are local
+// to the containing block as well. This is a tradeoff against having to
+// load a different block to do dictionary comparisons.
 //
 //   - Prim (no subcols)
 //   - Runs (subcols: values, run-ends)
@@ -155,16 +159,16 @@ enum IntForm {
 
 enum ChunkForm {
     SparseBit {
-        count: u8,
+        count: u8, // 6 bits
     }, // count of set-bits <= 32
     DirectBit, // bitmap of 32 bytes = 256 bits
     DirectFlo,
     SimpleInt(IntForm),
     StructBin {
-        prefix: IntForm,
-        hashed: IntForm,
-        offset: IntForm,
-        length: IntForm,
+        prefix: IntForm, // 6 bits
+        hashed: IntForm, // 6 bits
+        offset: IntForm, // 6 bits
+        length: IntForm, // 6 bits
     },
 }
 
