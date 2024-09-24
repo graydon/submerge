@@ -64,6 +64,30 @@ mod ioutil;
 use ioutil::{Reader, Writer, RangeExt};
 use submerge_base::Result;
 
+
+// A 32-byte / 256-bit bitmap, used both for the payload of a chunk when
+// the chunk is logical type Bit, and for the chunk bitmap in a track.
+struct Bitmap256 {
+    bits: [u64; 4],
+}
+impl Bitmap256 {
+    fn new() -> Self {
+        Bitmap256 { bits: [0; 4] }
+    }
+    fn set(&mut self, i: usize) {
+        self.bits[i / 64] |= 1 << (i % 64);
+    }
+    fn get(&self, i: usize) -> bool {
+        (self.bits[i / 64] & (1 << (i % 64))) != 0
+    }
+    fn clear(&mut self) {
+        self.bits = [0; 4];
+    }
+    fn count(&self) -> u32 {
+        self.bits.iter().map(|x| x.count_ones()).sum()
+    }
+}
+
 struct LayerMeta {
     rows: u64,
     cols: u64,
@@ -75,7 +99,9 @@ struct LayerWriter<W: Writer> {
     meta: LayerMeta,
 }
 struct BlockMeta {
-    track_ranges: Vec<Range<i64>>,
+    track_ranges: Vec<Range<i64>>, // lo/hi pair for each track
+    track_encodings: Vec<TrackEncoding>, // encoding for each track
+    track_rows: Vec<u16>, // row count for each track; may vary across substructure tracks
 }
 struct BlockWriter<W: Writer> {
     lyr: Box<LayerWriter<W>>,
@@ -83,8 +109,15 @@ struct BlockWriter<W: Writer> {
     range: Range<i64>,
     meta: BlockMeta,
 }
+
+// TrackMeta is nonempty only when track encoding is not Virt
 struct TrackMeta {
-    chunk_ranges: Vec<Range<i64>>,
+    chunk_ranges: Vec<Range<i64>>, // (optional) lo/hi pair for each int/bin/flo chunk
+    chunk_int_forms0: Vec<IntForm>, // (optional) prim int data, prim bin prefix, run end, dict code
+    chunk_int_forms1: Vec<IntForm>, // (optional) prim bin length, run or dict value
+    chunk_int_forms2: Vec<IntForm>, // (optional) form of prim/run/dict bin hash when any length > 8
+    chunk_int_forms3: Vec<IntForm>, // (optional) form of prim/run/dict bin offset when any length > 8
+    chunk_bins_large: Bitmap256, // (optional) if prim and logical type bin, 1 bit per chunk, 1 if any bin in chunk > 8 bytes
 }
 struct TrackWriter<W: Writer> {
     blk: Box<BlockWriter<W>>,
@@ -92,21 +125,23 @@ struct TrackWriter<W: Writer> {
     range: Range<i64>,
     meta: TrackMeta,
 }
+
 struct ChunkMeta {
-    rows: u8,
-    form: ChunkForm,
+    range: Range<i64>,
+    int_form_0: IntForm,
+    int_form_1: IntForm,
+    int_form_2: IntForm,
+    int_form_3: IntForm,
+    bin_large: bool,
 }
+
 struct ChunkWriter<W: Writer> {
     trk: Box<TrackWriter<W>>,
     chunk_num: usize,
-    meta: ChunkMeta,
+    chunk_meta: ChunkMeta,
 }
 
-enum ChunkIntFormLogical {
-    DirectInt { width: u8 },            // 2 bits, specifies u8, u16, u32, or u64
-    SlicedInt { count: u8, shift: u8 }, // 6 bits, specifies 3 bit width and 3 bit left-shift
-}
-
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 enum IntForm {
     SlicedInt1_0 = 0, // 0x00000000_000000ff
@@ -151,25 +186,114 @@ enum IntForm {
     SlicedInt7_0 = 0x21, // 0x00ffffff_ffffffff
     SlicedInt7_1 = 0x22, // 0xffffffff_ffffff00
 
+    SlicedInt8_0 = 0x23, // 0xffffffff_ffffffff
+
     // No DirectInt8, it's same as SlicedInt1_0
-    DirectInt16 = 0x23,
-    DirectInt32 = 0x24,
-    DirectInt64 = 0x25,
+    DirectInt16 = 0x24,
+    DirectInt32 = 0x25,
+    DirectInt64 = 0x26,
 }
 
-enum ChunkForm {
-    SparseBit {
-        count: u8, // 6 bits
-    }, // count of set-bits <= 32
-    DirectBit, // bitmap of 32 bytes = 256 bits
-    DirectFlo,
-    SimpleInt(IntForm),
-    StructBin {
-        prefix: IntForm, // 6 bits
-        hashed: IntForm, // 6 bits
-        offset: IntForm, // 6 bits
-        length: IntForm, // 6 bits
-    },
+impl IntForm {
+
+    fn is_sliced(&self) -> bool {
+        (*self as u8) <= (Self::SlicedInt8_0 as u8)
+    }
+
+    fn byte_count_and_shift(&self) -> (u8,u8) {
+        match self {
+            Self::SlicedInt1_0 => (1,0),
+            Self::SlicedInt1_1 => (1,8),
+            Self::SlicedInt1_2 => (1,16),
+            Self::SlicedInt1_3 => (1,24),
+            Self::SlicedInt1_4 => (1,32),
+            Self::SlicedInt1_5 => (1,40),
+            Self::SlicedInt1_6 => (1,48),
+            Self::SlicedInt1_7 => (1,56),
+
+            Self::SlicedInt2_0 => (2,0),
+            Self::SlicedInt2_1 => (2,8),
+            Self::SlicedInt2_2 => (2,16),
+            Self::SlicedInt2_3 => (2,24),
+            Self::SlicedInt2_4 => (2,32),
+            Self::SlicedInt2_5 => (2,40),
+            Self::SlicedInt2_6 => (2,48),
+
+            Self::SlicedInt3_0 => (3,0),
+            Self::SlicedInt3_1 => (3,8),
+            Self::SlicedInt3_2 => (3,16),
+            Self::SlicedInt3_3 => (3,24),
+            Self::SlicedInt3_4 => (3,32),
+            Self::SlicedInt3_5 => (3,40),
+
+            Self::SlicedInt4_0 => (4,0),
+            Self::SlicedInt4_1 => (4,8),
+            Self::SlicedInt4_2 => (4,16),
+            Self::SlicedInt4_3 => (4,24),
+            Self::SlicedInt4_4 => (4,32),
+
+            Self::SlicedInt5_0 => (5,0),
+            Self::SlicedInt5_1 => (5,8),
+            Self::SlicedInt5_2 => (5,16),
+            Self::SlicedInt5_3 => (5,24),
+
+            Self::SlicedInt6_0 => (6,0),
+            Self::SlicedInt6_1 => (6,8),
+            Self::SlicedInt6_2 => (6,16),
+
+            Self::SlicedInt7_0 => (7,0),
+            Self::SlicedInt7_1 => (7,8),
+
+            Self::SlicedInt8_0 => (8,0),
+
+            Self::DirectInt16 => (2,0),
+            Self::DirectInt32 => (4,0),
+            Self::DirectInt64 => (8,0),
+        }
+    }
+
+    fn byte_length_for_rows(&self, rows: u8) -> i64 {
+        let (byte_count, _) = self.byte_count_and_shift();
+        (byte_count as i64) * (rows as i64)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum LogicalType {
+    Bit = 0,
+    Int = 1,
+    Flo = 2,
+    Bin = 3,
+}
+impl LogicalType {
+    fn from_u8_low_2_bits(u: u8) -> Self {
+        match u & 0b11 {
+            0 => LogicalType::Bit,
+            1 => LogicalType::Int,
+            2 => LogicalType::Flo,
+            3 => LogicalType::Bin,
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum TrackEncoding {
+    Prim = 0,
+    Runs = 1,
+    Dict = 2,
+    Virt = 3,
+}
+impl TrackEncoding {
+    fn from_u8_low_2_bits(u: u8) -> Self {
+        match u & 0b11 {
+            0 => TrackEncoding::Prim,
+            1 => TrackEncoding::Runs,
+            2 => TrackEncoding::Dict,
+            3 => TrackEncoding::Virt,
+            _ => unreachable!(),
+        }
+    }
 }
 
 impl<W: Writer> ChunkWriter<W> {
