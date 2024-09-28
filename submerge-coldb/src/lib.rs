@@ -1,16 +1,15 @@
-// Column chunks have <= 256 rows, 16 primitive forms:
+// Column chunks have <= 256 rows, various primitive forms:
 //
-// - Bit (sparse, 1 byte units) -- 1 code when <= 32 bits set
 // - Bit (dense, 256-bit / 32-byte unit, a bitmap) -- 1 code when > 32 bits set
-// - Int (direct, 1,2,4,8 byte units) -- 4 codes
-// - Int (sliced, 1 byte units, 1..=8 times) -- 8 codes
-// - Flo (direct, 8 byte units) -- 1 code, 1 word body
-// - Bin (subcols: prefixes, hashes, offsets, sizes)
+// - Int (direct, 1,2,4,8 byte units shifted 1..8 bytes)
+// - Int (sliced, 1 byte units, 1..=8 times, shifted 1..8 bytes)
+// - Flo (direct, 8 byte units)
+// - Bin (subcols: lens, prefixes, optionally hashes and offsets if any len >8)
 //
 // All int forms are FOR-encoded based on the chunk min val.
 //
 // A sequence of up to 256 column chunks is then placed into a _track_,
-// which can have multi-column _encoding_ substructure but add
+// which can have added multi-column _encoding_ substructure but add
 // no _logical_ substructure (at the language level). A track is also
 // local to a block, so that any bins in its chunks use offsets inside
 // the block's heap. Dictionaries are also formed at this level which
@@ -34,14 +33,14 @@
 //   - AllOf (&, subcols: N child columns)
 //   - OneOf (|, subcols: 1 selector, 1 offsets, N child columns)
 //
-// Every logical column has, at the file level, a unique-in-its-parent
-// _label_ and a major/minor/role type-triple. This is the file's
-// logical column catalogue, which there is one of per file. The
-// column catalogue has a table-level heap and a nested set of
-// "multi"-columns of dictionary-coded bins.
+// Every logical column has, at the layer (file) level, a unique-in-its-parent
+// _label_ and a major/minor/role type-triple. This is the layer's logical
+// column catalogue, which there is one of per layer. The column catalogue has a
+// layer-level heap and a nested set of "multi"-columns of dictionary-coded
+// bins.
 //
-// Note: a _decoded_ bin is _5_ words: prefix, hash, offset, size, _heap ID_. These IDs can basically never be exhausted.
-// Note: iterators for all int-types yield i64 values regardless of basic and primitive encoding.
+// Note: a _decoded_ bin is _5_ words: prefix, hash, offset, size, _block ID_. These IDs can basically never be exhausted.
+// Note: iterators for all int-types yield i64 values regardless of track and chunk encoding.
 // Note: this is the same yielded-type between rowdb and coldb interfaces.
 // Note: only _predicate pushdown_ allows pruning sliced ints before reassembly.
 
@@ -62,7 +61,7 @@ mod test;
 
 mod ioutil;
 use ioutil::{Reader, Writer, RangeExt};
-use submerge_base::Result;
+use submerge_base::{Result,Error,err};
 
 
 // A 32-byte / 256-bit bitmap, used both for the payload of a chunk when
@@ -141,6 +140,161 @@ struct ChunkWriter<W: Writer> {
     chunk_meta: ChunkMeta,
 }
 
+/// [IntForm] is a 6-bit code that describes how an int chunk is laid out on
+/// disk. It is logically a 3-tuple of (`byte_width`, `byte_shift`, `sliced`).
+/// The `byte_width` is the number of bytes used to store each value, the
+/// `byte_shift` is the number of bytes to shift the value left to get the final
+/// value, and `sliced` is true if the chunk is written as a sequence of
+/// `byte_width` 1-byte slices, with each slice the length in bytes of the
+/// chunk.
+///
+/// Only certain combinations of this 3-tuple are valid. The [IntForm] enum covers
+/// all valid combinations. The [IntFormDesc] struct is used as an intermediate
+/// type that can hold all possible combinations whether valid or invalid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct IntFormDesc {
+    byte_width: u8,
+    byte_shift: u8,
+    sliced: bool,
+}
+
+impl TryFrom<IntFormDesc> for IntForm {
+    type Error = Error;
+
+    fn try_from(value: IntFormDesc) -> std::result::Result<Self, Self::Error> {
+        match (value.byte_width, value.byte_shift, value.sliced) {
+            (1, 0, true) => Ok(Self::SlicedInt1_0),
+            (1, 1, true) => Ok(Self::SlicedInt1_1),
+            (1, 2, true) => Ok(Self::SlicedInt1_2),
+            (1, 3, true) => Ok(Self::SlicedInt1_3),
+            (1, 4, true) => Ok(Self::SlicedInt1_4),
+            (1, 5, true) => Ok(Self::SlicedInt1_5),
+            (1, 6, true) => Ok(Self::SlicedInt1_6),
+            (1, 7, true) => Ok(Self::SlicedInt1_7),
+
+            (2, 0, true) => Ok(Self::SlicedInt2_0),
+            (2, 1, true) => Ok(Self::SlicedInt2_1),
+            (2, 2, true) => Ok(Self::SlicedInt2_2),
+            (2, 3, true) => Ok(Self::SlicedInt2_3),
+            (2, 4, true) => Ok(Self::SlicedInt2_4),
+            (2, 5, true) => Ok(Self::SlicedInt2_5),
+            (2, 6, true) => Ok(Self::SlicedInt2_6),
+
+            (3, 0, true) => Ok(Self::SlicedInt3_0),
+            (3, 1, true) => Ok(Self::SlicedInt3_1),
+            (3, 2, true) => Ok(Self::SlicedInt3_2),
+            (3, 3, true) => Ok(Self::SlicedInt3_3),
+            (3, 4, true) => Ok(Self::SlicedInt3_4),
+            (3, 5, true) => Ok(Self::SlicedInt3_5),
+
+            (4, 0, true) => Ok(Self::SlicedInt4_0),
+            (4, 1, true) => Ok(Self::SlicedInt4_1),
+            (4, 2, true) => Ok(Self::SlicedInt4_2),
+            (4, 3, true) => Ok(Self::SlicedInt4_3),
+
+            (5, 0, true) => Ok(Self::SlicedInt5_0),
+            (5, 1, true) => Ok(Self::SlicedInt5_1),
+            (5, 2, true) => Ok(Self::SlicedInt5_2),
+            (5, 3, true) => Ok(Self::SlicedInt5_3),
+
+            (6, 0, true) => Ok(Self::SlicedInt6_0),
+            (6, 1, true) => Ok(Self::SlicedInt6_1),
+            (6, 2, true) => Ok(Self::SlicedInt6_2),
+
+            (7, 0, true) => Ok(Self::SlicedInt7_0),
+            (7, 1, true) => Ok(Self::SlicedInt7_1),
+
+            (8, 0, true) => Ok(Self::SlicedInt8_0),
+
+            (2, 0, false) => Ok(Self::DirectInt2_0),
+            (2, 1, false) => Ok(Self::DirectInt2_1),
+            (2, 2, false) => Ok(Self::DirectInt2_2),
+            (2, 3, false) => Ok(Self::DirectInt2_3),
+            (2, 4, false) => Ok(Self::DirectInt2_4),
+            (2, 5, false) => Ok(Self::DirectInt2_5),
+            (2, 6, false) => Ok(Self::DirectInt2_6),
+
+            (4, 0, false) => Ok(Self::DirectInt4_0),
+            (4, 1, false) => Ok(Self::DirectInt4_1),
+            (4, 2, false) => Ok(Self::DirectInt4_2),
+            (4, 3, false) => Ok(Self::DirectInt4_3),
+            (4, 4, false) => Ok(Self::DirectInt4_4),
+
+            (8, 0, false) => Ok(Self::DirectInt8_0),
+
+            _ => Err(err("invalid InfFormDesc")),
+        }
+    }
+}
+
+impl From<IntForm> for IntFormDesc {
+
+    fn from(value: IntForm) -> Self {
+        let (byte_width, byte_shift, sliced) = match value {
+            IntForm::SlicedInt1_0 => (1, 0, true),
+            IntForm::SlicedInt1_1 => (1, 1, true),
+            IntForm::SlicedInt1_2 => (1, 2, true),
+            IntForm::SlicedInt1_3 => (1, 3, true),
+            IntForm::SlicedInt1_4 => (1, 4, true),
+            IntForm::SlicedInt1_5 => (1, 5, true),
+            IntForm::SlicedInt1_6 => (1, 6, true),
+            IntForm::SlicedInt1_7 => (1, 7, true),
+
+            IntForm::SlicedInt2_0 => (2, 0, true),
+            IntForm::SlicedInt2_1 => (2, 1, true),
+            IntForm::SlicedInt2_2 => (2, 2, true),
+            IntForm::SlicedInt2_3 => (2, 3, true),
+            IntForm::SlicedInt2_4 => (2, 4, true),
+            IntForm::SlicedInt2_5 => (2, 5, true),
+            IntForm::SlicedInt2_6 => (2, 6, true),
+
+            IntForm::SlicedInt3_0 => (3, 0, true),
+            IntForm::SlicedInt3_1 => (3, 1, true),
+            IntForm::SlicedInt3_2 => (3, 2, true),
+            IntForm::SlicedInt3_3 => (3, 3, true),
+            IntForm::SlicedInt3_4 => (3, 4, true),
+            IntForm::SlicedInt3_5 => (3, 5, true),
+
+            IntForm::SlicedInt4_0 => (4, 0, true),
+            IntForm::SlicedInt4_1 => (4, 1, true),
+            IntForm::SlicedInt4_2 => (4, 2, true),
+            IntForm::SlicedInt4_3 => (4, 3, true),
+            IntForm::SlicedInt4_4 => (4, 4, true),
+
+            IntForm::SlicedInt5_0 => (5, 0, true),
+            IntForm::SlicedInt5_1 => (5, 1, true),
+            IntForm::SlicedInt5_2 => (5, 2, true),
+            IntForm::SlicedInt5_3 => (5, 3, true),
+
+            IntForm::SlicedInt6_0 => (6, 0, true),
+            IntForm::SlicedInt6_1 => (6, 1, true),
+            IntForm::SlicedInt6_2 => (6, 2, true),
+
+            IntForm::SlicedInt7_0 => (7, 0, true),
+            IntForm::SlicedInt7_1 => (7, 1, true),
+
+            IntForm::SlicedInt8_0 => (8, 0, true),
+
+            IntForm::DirectInt2_0 => (2, 0, false),
+            IntForm::DirectInt2_1 => (2, 1, false),
+            IntForm::DirectInt2_2 => (2, 2, false),
+            IntForm::DirectInt2_3 => (2, 3, false),
+            IntForm::DirectInt2_4 => (2, 4, false),
+            IntForm::DirectInt2_5 => (2, 5, false),
+            IntForm::DirectInt2_6 => (2, 6, false),
+
+            IntForm::DirectInt4_0 => (4, 0, false),
+            IntForm::DirectInt4_1 => (4, 1, false),
+            IntForm::DirectInt4_2 => (4, 2, false),
+            IntForm::DirectInt4_3 => (4, 3, false),
+            IntForm::DirectInt4_4 => (4, 4, false),
+
+            IntForm::DirectInt8_0 => (8, 0, false),
+        };
+        IntFormDesc { byte_width, byte_shift, sliced }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 enum IntForm {
@@ -188,74 +342,23 @@ enum IntForm {
 
     SlicedInt8_0 = 0x23, // 0xffffffff_ffffffff
 
-    // No DirectInt8, it's same as SlicedInt1_0
-    DirectInt16 = 0x24,
-    DirectInt32 = 0x25,
-    DirectInt64 = 0x26,
-}
+    // No DirectInt1_*, it's same as SlicedInt1_*
 
-impl IntForm {
+    DirectInt2_0 = 0x24, // 0x00000000_0000ffff
+    DirectInt2_1 = 0x25, // 0x00000000_00ffff00
+    DirectInt2_2 = 0x26, // 0x00000000_ffff0000
+    DirectInt2_3 = 0x27, // 0x000000ff_ff000000
+    DirectInt2_4 = 0x28, // 0x0000ffff_00000000
+    DirectInt2_5 = 0x29, // 0x00ffff00_00000000
+    DirectInt2_6 = 0x2a, // 0xffff0000_00000000
 
-    fn is_sliced(&self) -> bool {
-        (*self as u8) <= (Self::SlicedInt8_0 as u8)
-    }
+    DirectInt4_0 = 0x2b, // 0x00000000_ffffffff
+    DirectInt4_1 = 0x2c, // 0x000000ff_ffffff00
+    DirectInt4_2 = 0x2d, // 0x0000ffff_ffff0000
+    DirectInt4_3 = 0x2e, // 0x00ffffff_ff000000
+    DirectInt4_4 = 0x2f, // 0xffffffff_00000000
 
-    fn byte_count_and_shift(&self) -> (u8,u8) {
-        match self {
-            Self::SlicedInt1_0 => (1,0),
-            Self::SlicedInt1_1 => (1,8),
-            Self::SlicedInt1_2 => (1,16),
-            Self::SlicedInt1_3 => (1,24),
-            Self::SlicedInt1_4 => (1,32),
-            Self::SlicedInt1_5 => (1,40),
-            Self::SlicedInt1_6 => (1,48),
-            Self::SlicedInt1_7 => (1,56),
-
-            Self::SlicedInt2_0 => (2,0),
-            Self::SlicedInt2_1 => (2,8),
-            Self::SlicedInt2_2 => (2,16),
-            Self::SlicedInt2_3 => (2,24),
-            Self::SlicedInt2_4 => (2,32),
-            Self::SlicedInt2_5 => (2,40),
-            Self::SlicedInt2_6 => (2,48),
-
-            Self::SlicedInt3_0 => (3,0),
-            Self::SlicedInt3_1 => (3,8),
-            Self::SlicedInt3_2 => (3,16),
-            Self::SlicedInt3_3 => (3,24),
-            Self::SlicedInt3_4 => (3,32),
-            Self::SlicedInt3_5 => (3,40),
-
-            Self::SlicedInt4_0 => (4,0),
-            Self::SlicedInt4_1 => (4,8),
-            Self::SlicedInt4_2 => (4,16),
-            Self::SlicedInt4_3 => (4,24),
-            Self::SlicedInt4_4 => (4,32),
-
-            Self::SlicedInt5_0 => (5,0),
-            Self::SlicedInt5_1 => (5,8),
-            Self::SlicedInt5_2 => (5,16),
-            Self::SlicedInt5_3 => (5,24),
-
-            Self::SlicedInt6_0 => (6,0),
-            Self::SlicedInt6_1 => (6,8),
-            Self::SlicedInt6_2 => (6,16),
-
-            Self::SlicedInt7_0 => (7,0),
-            Self::SlicedInt7_1 => (7,8),
-
-            Self::SlicedInt8_0 => (8,0),
-
-            Self::DirectInt16 => (2,0),
-            Self::DirectInt32 => (4,0),
-            Self::DirectInt64 => (8,0),
-        }
-    }
-
-    fn byte_length_for_rows(&self, rows: u8) -> i64 {
-        let (byte_count, _) = self.byte_count_and_shift();
-        (byte_count as i64) * (rows as i64)
-    }
+    DirectInt8_0 = 0x30, // 0xffffffff_ffffffff
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -296,8 +399,13 @@ impl TrackEncoding {
     }
 }
 
+
+
 impl<W: Writer> ChunkWriter<W> {
-    // A chunk should use positive-virt encoding if every value is
+}
+
+impl<W: Writer> TrackWriter<W> {
+    // A track should use positive-virt encoding if every value is
     // row*n for some n. We should notice this is _not_ the case after
     // the second iteration of looking.
     fn pos_virt_base_and_factor(vals: &[i64]) -> Option<(i64, i64)> {
@@ -325,7 +433,7 @@ impl<W: Writer> ChunkWriter<W> {
         Some((base, diff))
     }
 
-    // A chunk should use negative-virt encoding if every value is
+    // A track should use negative-virt encoding if every value is
     // row/n for some n, which is true exactly when it's a sequence
     // of n-length runs of values that ascend by 1 after each run.
     fn neg_virt_base_and_factor(vals: &[i64]) -> Option<(i64, i64)> {
@@ -378,14 +486,75 @@ impl<W: Writer> ChunkWriter<W> {
         }
     }
 
-    // Returns the number of bytes, and the left shift, necessary to
-    // reconstruct a given column of u64 values.
-    fn byte_width_and_shift(vals: &[u64]) -> (u8, u8) {
-        let mut accum = 0;
-        let mut shift = 0;
-        let mut width = 0;
+    fn run_end_encode<T:Eq>(vals: &[T]) -> Result<Vec<(&T,u16)>> {
+        let len = vals.len();
+        if len == 0 {
+            return Ok(Vec::new());
+        } else if len == 1 {
+            return Ok(vec![(&vals[0], 0)]);
+        } else if len > 0xffff {
+            return Err(err("track longer than 64k rows"));
+        }
+        let mut encoded = Vec::new();
+        let mut prev = &vals[0];
+        let last = len - 1; 
+        for (i, val) in vals.iter().enumerate() {
+            if i > 0 && (*prev != *val || i == last) {
+                encoded.push((prev, i as u16));
+            }
+            prev = val;
+        }
+        Ok(encoded)
+    }
+
+    fn dict_encode<T:Ord+Eq>(vals: &[T]) -> Result<(Vec<&T>,Vec<u16>)> {
+        if vals.len() > 0xffff {
+            return Err(err("track longer than 64k rows"));
+        }
+        let mut dict = vals.iter().map(|x| (x, 0_u16)).collect::<std::collections::BTreeMap<&T,u16>>();
+        let values = dict.keys().cloned().collect::<Vec<&T>>();
+        for (i, val) in dict.iter_mut().enumerate() {
+            *val.1 = i as u16;
+        }
+        let mut codes = Vec::new();
+        for val in vals.iter() {
+            let code = dict.get(val).ok_or_else(|| err("dict value not found"))?;
+            codes.push(*code);
+        }
+        Ok((values, codes))
+    }
+
+    fn select_track_encoding_and_vals(vals: &[i64]) -> Result<(TrackEncoding, i64, i64)> {
+        if let Some((base, diff)) = Self::pos_virt_base_and_factor(vals) {
+            // eprintln!("pos_virt: base={}, diff={}", base, diff);
+           Ok((TrackEncoding::Virt, base, diff))
+        } else if let Some((base, diff)) = Self::neg_virt_base_and_factor(vals) {
+            // eprintln!("neg_virt: base={}, diff={}", base, diff);
+            Ok((TrackEncoding::Virt, base, diff))
+        } else {
+            let ree = Self::run_end_encode(vals)?;
+            let dict = Self::dict_encode(vals)?;
+            // TODO decide which of ree, dict and prim to use.
+            // eprintln!("run_savings={}", run_savings);
+            // eprintln!("prim");
+            let min = vals.iter().cloned().min().unwrap_or(0);
+            let max = vals.iter().cloned().max().unwrap_or(0);
+            Ok((TrackEncoding::Prim, min, max))
+        }
+    }
+}
+
+impl<W: Writer> ChunkWriter<W> {
+    /// Returns the number of bytes, and the left shift, necessary to reconstruct
+    /// a given column of i64 values. Note that all the i64 values should be
+    /// positive (offsets from a FOR base) otherwise the result will spend bytes
+    /// storing the extended sign bits.
+    fn byte_width_and_shift(vals: &[i64]) -> (u8, u8) {
+        let mut accum: u64 = 0;
+        let mut shift: u8 = 0;
+        let mut width: u8 = 0;
         for v in vals.iter() {
-            accum |= *v;
+            accum |= *v as u64;
         }
         while accum != 0 && accum & 0xff == 0 {
             shift += 1;
@@ -397,8 +566,30 @@ impl<W: Writer> ChunkWriter<W> {
         }
         (width, shift)
     }
+    fn select_int_form(vals: &[i64], sliced: bool) -> IntForm {
+        let (mut byte_width, byte_shift) = Self::byte_width_and_shift(vals);
+        if ! sliced {
+            // Direct int forms only exist in 2, 4, and 8 byte widths.
+            if byte_width == 1 {
+                byte_width = 2;
+            } else if byte_width == 3 {
+                byte_width = 4;
+            } else if byte_width > 4 {
+                byte_width = 8;
+            }
+        }
+        let desc = IntFormDesc { byte_width, byte_shift, sliced };
+        if let Ok(form) = IntForm::try_from(desc) {
+            form
+        } else if sliced {
+            // This should never happen, but just in case.
+            IntForm::SlicedInt8_0
+        } else {
+            // This should never happen, but just in case.
+            IntForm::DirectInt8_0
+        }
+    }
 
-    fn select_encoding(vals: &[i64]) {}
 }
 
 struct LayerReader {}

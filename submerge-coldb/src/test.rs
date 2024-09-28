@@ -1,14 +1,15 @@
-use crate::{ChunkWriter, ioutil::{Writer, MemWriter}, Result};
+use crate::{TrackWriter, ChunkWriter, ioutil::{Writer, MemWriter}, Result};
 use test_log::test;
 
 pub(crate) mod annotations;
 
-type MemChunkWriter = ChunkWriter<MemWriter>;
+type MemTrackWriter = TrackWriter<MemWriter>;
+type MemChunkWriter = TrackWriter<MemWriter>;
 
 #[test]
 fn test_pos_virt_base_and_factor() {
     assert_eq!(
-        MemChunkWriter::pos_virt_base_and_factor(&[2, 6, 10, 14, 18]),
+        MemTrackWriter::pos_virt_base_and_factor(&[2, 6, 10, 14, 18]),
         Some((2, 4))
     );
 }
@@ -16,11 +17,11 @@ fn test_pos_virt_base_and_factor() {
 #[test]
 fn test_neg_virt_base_and_factor() {
     assert_eq!(
-        MemChunkWriter::neg_virt_base_and_factor(&[2, 2, 3, 3, 3]),
+        MemTrackWriter::neg_virt_base_and_factor(&[2, 2, 3, 3, 3]),
         None
     );
     assert_eq!(
-        MemChunkWriter::neg_virt_base_and_factor(&[2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5]),
+        MemTrackWriter::neg_virt_base_and_factor(&[2, 2, 2, 3, 3, 3, 4, 4, 4, 5, 5]),
         Some((2, -3))
     );
 }
