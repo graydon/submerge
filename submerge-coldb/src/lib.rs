@@ -76,14 +76,41 @@ impl Bitmap256 {
     fn set(&mut self, i: usize) {
         self.bits[i / 64] |= 1 << (i % 64);
     }
+    fn clear(&mut self, i: usize) {
+        self.bits[i / 64] &= !(1 << (i % 64));
+    }
     fn get(&self, i: usize) -> bool {
         (self.bits[i / 64] & (1 << (i % 64))) != 0
     }
-    fn clear(&mut self) {
+    fn set_all(&mut self) {
+        self.bits = [u64::MAX; 4];
+    }
+    fn clear_all(&mut self) {
         self.bits = [0; 4];
     }
     fn count(&self) -> u32 {
         self.bits.iter().map(|x| x.count_ones()).sum()
+    }
+    fn is_empty(&self) -> bool {
+        self.bits.iter().all(|x| *x == 0)
+    }
+    fn is_full(&self) -> bool {
+        self.bits.iter().all(|x| *x == u64::MAX)
+    }
+    fn union(&mut self, other: &Self) {
+        for i in 0..4 {
+            self.bits[i] |= other.bits[i];
+        }
+    }
+    fn intersect(&mut self, other: &Self) {
+        for i in 0..4 {
+            self.bits[i] &= other.bits[i];
+        }
+    }
+    fn subtract(&mut self, other: &Self) {
+        for i in 0..4 {
+            self.bits[i] &= !other.bits[i];
+        }
     }
 }
 
@@ -109,14 +136,108 @@ struct BlockWriter<W: Writer> {
     meta: BlockMeta,
 }
 
+
+// What if for physical coding we go even simpler:
+//
+//  - Every non-bit track is dict-encoded, always. We need to for f64 and bin
+//    anyways, and if we also do so for ints then we're always _scanning_ 1 or
+//    2-byte columns after a dict lookup; the dict is sorted and contents are
+//    probed with binary search anyways so it doesn't benefit from SIMD, doesn't
+//    need slicing. We can shift and size-class the dict content words at least.
+//
+//       - Dict means a point-binsearch that fails => value not in track (even
+//         if the value is inside the _range_ of the track).
+//
+//       - So this is a partial solution to the point-query question. And if
+//         there is a _hit_ then the value returned is a dict code, and if
+//         there's a unique chunk holding that code (i.e. truly a point lookup)
+//         then only one chunk range will hold it, but determining that will
+//         only require looking at 256 chunk ranges and then finding the row
+//         inside the chunk: 3 256-byte reads + 1 final-byte read to confirm the
+//         second byte of the row. It's not nothing but not super expensive.
+//
+//       - Dict also lets you do a range query by 2 binsearches + a 1-or-2 byte
+//         scan, limited to those chunk-ranges that intersect. This is
+//         potentially cheaper then a multi-stripe scan.
+//
+//       - A 64k-entry binsearch is <= 16 iterations, which is not bad.
+//
+//  - Further, we can run-end-encode the dict codes, and the run-ends are all 2
+//    byte words also. The dict codes themselves may benefit from slicing, but
+//    _only_ them. We can have 1 bitmap that says whether the dict codes are
+//    1-byte or 2-byte (chunk by chunk), and another bitmap that indicates
+//    whether each chunk is accompanied by a chunk of run-end numbers, or if all
+//    runs are implicitly 1-row long.
+//
+//  - The chunk ranges / FOR anchors of each chunk are then only 2-byte words,
+//    since they're dict codes too.
+//
+//  - So our physical track forms are:
+//    - direct (maybe shifted, maybe 1, 2, 4 or 8-byte) cols for bin/int/flo
+//      dict contents
+//    - direct 2-byte cols for run-end numbers or multi-sructure numbers
+//    - sliced 1-byte or 2-byte cols for dict-code chunks
+//
+
+enum WordTy {
+    Word1,
+    Word2,
+    Word4,
+    Word8,
+}
+
+// Wrapper for storing two bitmaps to encode
+// an array of 4-case WordTy values. 
+struct WordTy256 {
+    hi: Bitmap256,
+    lo: Bitmap256,
+}
+
+impl WordTy256 {
+    fn get_word_ty(&self, i: usize) -> WordTy {
+        match (self.hi.get(i), self.lo.get(i)) {
+            (false, false) => WordTy::Word1,
+            (false, true) => WordTy::Word2,
+            (true, false) => WordTy::Word4,
+            (true, true) => WordTy::Word8,
+        }
+    }
+    fn set_word_ty(&mut self, i: usize, ty: WordTy) {
+        match ty {
+            WordTy::Word1 => {
+                self.hi.clear(i);
+                self.lo.clear(i);
+            }
+            WordTy::Word2 => {
+                self.hi.clear(i);
+                self.lo.set(i);
+            }
+            WordTy::Word4 => {
+                self.hi.set(i);
+                self.lo.clear(i);
+            }
+            WordTy::Word8 => {
+                self.hi.set(i);
+                self.lo.set(i);
+            }
+        }
+    }
+}
+
 // TrackMeta is nonempty only when track encoding is not Virt
 struct TrackMeta {
-    chunk_ranges: Vec<Range<i64>>, // (optional) lo/hi pair for each int/bin/flo chunk
-    chunk_int_forms0: Vec<IntForm>, // (optional) prim int data, prim bin prefix, run end, dict code
-    chunk_int_forms1: Vec<IntForm>, // (optional) prim bin length, run or dict value
-    chunk_int_forms2: Vec<IntForm>, // (optional) form of prim/run/dict bin hash when any length > 8
-    chunk_int_forms3: Vec<IntForm>, // (optional) form of prim/run/dict bin offset when any length > 8
-    chunk_bins_large: Bitmap256, // (optional) if prim and logical type bin, 1 bit per chunk, 1 if any bin in chunk > 8 bytes
+    chunk_populated: Bitmap256, // 1 bit per chunk, 1 if any row in chunk is populated
+    chunk_two_bytes: Bitmap256, // 1 bit per chunk, 1 if any dict code > 255
+    chunk_run_ends: Bitmap256, // 1 bit per chunk, 1 if any run > 1 row (chunk has extra 2-byte run-ends column)
+
+    chunk_dict_ranges: Vec<Range<u16>>, // (optional) lo/hi dict code for each int/bin/flo chunk    
+
+    dict_bin_large: Bitmap256, // (optional) if bin, 1 if any bin in chunk > 8 bytes
+
+    dict_chunk_tys_0: WordTy256, // dict value: int/flo data or bin prefix
+    dict_chunk_tys_1: WordTy256, // (optional) bin length if bin
+    dict_chunk_tys_2: WordTy256, // (optional) bin hash in large-bin chunks
+    dict_chunk_tys_3: WordTy256, // (optional) bin heap offset in large-bin chunks
 }
 struct TrackWriter<W: Writer> {
     blk: Box<BlockWriter<W>>,
