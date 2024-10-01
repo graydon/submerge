@@ -115,17 +115,16 @@
 // N, and it can use that to seal off the previous config and propose
 // the new one.
 
-
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use submerge_eval::Evaluator;
-use submerge_lang::{Expr, Tab, Path, Vals};
-use submerge_net::{NodeID, RealmTime, NodeTime, Duration};
+use submerge_lang::{Expr, Path, Tab, Vals};
+use submerge_net::{Duration, NodeID, NodeTime, RealmTime};
 
 use submerge_base::Error;
 
-pub type NodeSet = BTreeSet<NodeID>; 
+pub type NodeSet = BTreeSet<NodeID>;
 
 mod paxos;
 
@@ -137,7 +136,7 @@ pub struct Config {
     retries: i64,
     // The number of milliseconds each attempt waits for an ack
     // before assuming it failed and retrying or giving up
-    timeout: Duration
+    timeout: Duration,
 }
 
 // A footprint indicates the set of keys that a given txn will read and write.
@@ -152,27 +151,27 @@ pub struct Config {
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 struct Footprint {
     reads: Vec<Path>,
-    writes: Vec<Path>
+    writes: Vec<Path>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct Thunk {
     vals: Tab,
     expr: Expr,
-    foot: Footprint
+    foot: Footprint,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Transaction {
     time: RealmTime,
     thunk: Thunk,
-    state: State
+    state: State,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub enum Record {
     Resolved(Vals),
-    Unresolved(Thunk)
+    Unresolved(Thunk),
 }
 
 pub trait Store {
@@ -184,15 +183,14 @@ pub trait Store {
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 enum PutTry {
     Nothing,
-    Attempt{count:i64, time:NodeTime},
-    Success
+    Attempt { count: i64, time: NodeTime },
+    Success,
 }
-
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 enum State {
     // Replicating thunks into nodes
-    Put { nodes: BTreeMap<NodeID,PutTry> },
+    Put { nodes: BTreeMap<NodeID, PutTry> },
     // Replication failed with some set of timed-out nodes
     Err { nodes: NodeSet },
     // Waiting for the watermark to advance past us
@@ -200,10 +198,7 @@ enum State {
     // Running the transaction thunk
     Run { eval: Evaluator },
     // Complete
-    End
+    End,
 }
 
-impl Transaction {
-}
-
-
+impl Transaction {}

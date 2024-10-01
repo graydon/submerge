@@ -7,12 +7,12 @@
 // Eval equips the system with a slightly richer complexity class, Dyn-FO, and
 // additionally allows program _staging_ / metaprogramming.
 
-use submerge_lang::{Tab,Vm};
+use submerge_lang::{Tab, Vm};
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Evaluator {
     tmp: Tab,
     new: Tab,
     seq: usize,
-    cur: Vm
+    cur: Vm,
 }

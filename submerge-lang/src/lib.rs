@@ -1,9 +1,6 @@
 #![allow(dead_code)]
 use ordered_float::OrderedFloat;
-use serde::{Serialize, Deserialize};
-
-
-
+use serde::{Deserialize, Serialize};
 
 // When doing columnar evaluation
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
@@ -70,7 +67,7 @@ pub struct Insn {
     // 12 bits unopcode + 4 = 2 bits per operand: literal/register and scalar/vector
     a: Operand, // 16 bits lit-or-reg
     b: Operand, // 16 bits lit-or-reg
-    c: Operand  // 16 bits lit-or-reg
+    c: Operand, // 16 bits lit-or-reg
 }
 
 // Insns are designed to pack/unpack to 64-bit words.

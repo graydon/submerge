@@ -1,9 +1,6 @@
 use crossterm::{
     event::{self, KeyCode, KeyEventKind},
-    terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen,
-        LeaveAlternateScreen,
-    },
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
 use ratatui::{
@@ -11,7 +8,6 @@ use ratatui::{
     widgets::Paragraph,
 };
 use std::io::{stdout, Result};
-
 
 pub fn run_ui() -> Result<()> {
     stdout().execute(EnterAlternateScreen)?;
@@ -35,8 +31,7 @@ fn main_loop() -> Result<()> {
     Ok(())
 }
 
-fn draw_ui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()>
-{
+fn draw_ui(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
     terminal.draw(|frame| {
         let area = frame.size();
         frame.render_widget(
@@ -53,13 +48,10 @@ enum UIEvent {
     Quit,
 }
 
-fn handle_events() -> Result<Option<UIEvent>>
-{
+fn handle_events() -> Result<Option<UIEvent>> {
     if event::poll(std::time::Duration::from_millis(16))? {
         if let event::Event::Key(key) = event::read()? {
-            if key.kind == KeyEventKind::Press
-                && key.code == KeyCode::Char('q')
-            {
+            if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
                 return Ok(Some(UIEvent::Quit));
             }
         }

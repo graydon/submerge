@@ -1,3 +1,3 @@
 mod error;
 
-pub use error::{Error, Result, err};
+pub use error::{err, Error, Result};

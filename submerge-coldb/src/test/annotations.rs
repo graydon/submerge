@@ -1,6 +1,6 @@
-use submerge_base::Result;
-use std::ops::Range;
 use crate::ioutil::RangeExt;
+use std::ops::Range;
+use submerge_base::Result;
 
 pub struct Annotations {
     pub(crate) annotations: Vec<(Range<i64>, String)>,
@@ -102,5 +102,4 @@ impl Annotations {
     }
 }
 
-trait AnnotateWriter {
-}
+trait AnnotateWriter {}

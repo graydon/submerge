@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 pub struct Database {
-    db: redb::Database
+    db: redb::Database,
 }
 /*
 impl Database {

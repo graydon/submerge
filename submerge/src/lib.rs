@@ -1,5 +1,3 @@
-
-
 // A server collects together all resources necessary to function as a replica
 // of realm's tables and to support all necesary functions of the realm.
 //
@@ -17,15 +15,10 @@ pub enum ServerState {
     Running,
 }
 
-pub trait ServerTrait {
+pub trait ServerTrait {}
 
-}
+struct ServerImpl {}
 
-struct ServerImpl {
-
-}
-
-impl ServerTrait for ServerImpl {
-}
+impl ServerTrait for ServerImpl {}
 
 pub type Server = Box<dyn ServerTrait>;

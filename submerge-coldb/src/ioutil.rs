@@ -1,5 +1,8 @@
 use std::{
-    fs::File, io::{BufReader, BufWriter, Cursor, Read, Seek, Write}, path::{Display, PathBuf}, sync::Arc
+    fs::File,
+    io::{BufReader, BufWriter, Cursor, Read, Seek, Write},
+    path::{Display, PathBuf},
+    sync::Arc,
 };
 use submerge_base::Result;
 
@@ -9,7 +12,9 @@ use crate::test::annotations::Annotations;
 struct Annotations;
 #[cfg(not(test))]
 impl Annotations {
-    fn new() -> Self { Self }
+    fn new() -> Self {
+        Self
+    }
     fn push(&mut self, _range: std::ops::Range<i64>, _name: &str) {}
 }
 
@@ -36,7 +41,9 @@ pub trait Writer: Write + Seek + Send + Sized {
     }
     fn get_annotations(&mut self) -> &mut Annotations;
     #[cfg(test)]
-    fn annotate_pos(&mut self) -> Result<i64> { self.pos() }
+    fn annotate_pos(&mut self) -> Result<i64> {
+        self.pos()
+    }
     #[cfg(test)]
     fn annotate_to_pos_from(&mut self, name: &str, start: i64) -> Result<()> {
         let pos = self.annotate_pos()?;
@@ -51,9 +58,13 @@ pub trait Writer: Write + Seek + Send + Sized {
         Ok(ok)
     }
     #[cfg(not(test))]
-    fn annotate_pos(&mut self) -> Result<i64> { Ok(0) }
+    fn annotate_pos(&mut self) -> Result<i64> {
+        Ok(0)
+    }
     #[cfg(not(test))]
-    fn annotate_to_pos_from(&mut self, name: &str, start: i64) -> Result<()> { Ok(()) }
+    fn annotate_to_pos_from(&mut self, name: &str, start: i64) -> Result<()> {
+        Ok(())
+    }
     #[cfg(not(test))]
     fn annotate<T>(&mut self, name: &str, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
         f(self)
@@ -61,13 +72,36 @@ pub trait Writer: Write + Seek + Send + Sized {
     fn write_annotated_byte_slice(&mut self, name: &str, val: &[u8]) -> Result<()> {
         self.annotate(name, |w| Ok(w.write_all(val)?))
     }
-    fn write_annotated_num<const N: usize, T:funty::Numeric<Bytes=[u8;N]>>(&mut self, name: &str, val: T) -> Result<()> {
+    fn write_annotated_num<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(
+        &mut self,
+        name: &str,
+        val: T,
+    ) -> Result<()> {
         self.write_annotated_byte_slice(name, &val.to_le_bytes())
     }
-    fn write_annotated_num_slice<const N: usize, T:funty::Numeric<Bytes=[u8;N]>>(&mut self, name: &str, val: &[T]) -> Result<()> {
+    fn write_annotated_num_slice<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(
+        &mut self,
+        name: &str,
+        val: &[T],
+    ) -> Result<()> {
         self.annotate(name, |w| {
             for &v in val {
                 w.write_all(&v.to_le_bytes())?;
+            }
+            Ok(())
+        })
+    }
+    fn write_lane_of_annotated_num_slice<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(
+        &mut self,
+        name: &str,
+        lane: u8,
+        val: &[T],
+    ) -> Result<()> {
+        self.annotate(name, |w| {
+            for &v in val {
+                let tmp = v.to_le_bytes();
+                let byte = tmp[lane as usize];
+                w.write(&[byte])?;
             }
             Ok(())
         })
@@ -130,7 +164,8 @@ impl MemWriter {
     }
     #[cfg(test)]
     pub(crate) fn render_annotations(&self) -> Result<String> {
-        self.annotations.render_hexdump(self.mem.get_ref().as_slice())
+        self.annotations
+            .render_hexdump(self.mem.get_ref().as_slice())
     }
 }
 
@@ -212,7 +247,11 @@ impl FileWriter {
         let file = BufWriter::new(file);
         let path = path.to_owned();
         let annotations = Annotations::new();
-        Ok(Self { file, path, annotations })
+        Ok(Self {
+            file,
+            path,
+            annotations,
+        })
     }
 }
 

@@ -1,4 +1,3 @@
-
 // This file is adapted from stateright's examples directory. It's the simplest
 // implementation I could find of single-decree paxos.
 //

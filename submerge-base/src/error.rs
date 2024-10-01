@@ -4,8 +4,8 @@
 //    after it's created (or at least when it's propagated from a library we use back to us)
 // 3. Same but for logging / emitting error messages into the tracing/logging system
 
-use std::borrow::Cow;
 use backtrace_error::DynBacktraceError;
+use std::borrow::Cow;
 use tracing::error;
 
 #[cfg(test)]

@@ -1,11 +1,9 @@
-use submerge_base::{Error,err};
-use serde::{Serialize, Deserialize};
 use core::fmt::Debug;
 use core::hash::Hash;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+use submerge_base::{err, Error};
 use submerge_lang::{Expr, Path, Vals};
-
-
 
 pub trait Data: Clone + Debug + Eq + PartialEq + Ord + Hash {}
 impl<T> Data for T where T: Clone + Debug + Eq + PartialEq + Ord + Hash {}
