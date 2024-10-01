@@ -3,19 +3,27 @@ use std::ops::Range;
 use submerge_base::Result;
 
 pub struct Annotations {
-    pub(crate) annotations: Vec<(Range<i64>, String)>,
+    context: Vec<String>,
+    pub(crate) annotations: Vec<(Range<i64>, Vec<String>)>,
 }
 
 impl Annotations {
     pub fn new() -> Self {
         Annotations {
-            #[cfg(test)]
+            context: Vec::new(),
             annotations: Vec::new(),
         }
     }
-    pub fn push(&mut self, range: Range<i64>, name: &str) {
-        #[cfg(test)]
-        self.annotations.push((range, name.to_string()));
+    pub fn push_context<T: ToString>(&mut self, context: T) {
+        self.context.push(context.to_string());
+    }
+    pub fn pop_context(&mut self) {
+        self.context.pop();
+    }
+    pub fn annotate<T:ToString>(&mut self, range: Range<i64>, name: T) {
+        let mut ctx = self.context.clone();
+        ctx.push(name.to_string());
+        self.annotations.push((range, ctx));
     }
     #[cfg(test)]
     pub fn render_hexdump(&self, buf: &[u8]) -> Result<String> {
@@ -26,6 +34,7 @@ impl Annotations {
             if r.is_empty() {
                 continue;
             }
+            let name = name.join(".");
             let (lo, hi) = (r.start, r.end - 1);
             let len = r.len();
             if lo < pos {

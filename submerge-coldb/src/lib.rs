@@ -67,6 +67,7 @@ mod test;
 
 mod ioutil;
 use ioutil::{RangeExt, Reader, Writer};
+use ordered_float::OrderedFloat;
 use submerge_base::{err, Error, Result};
 
 // A 32-byte / 256-bit bitmap, used both for the payload of a chunk when
@@ -120,7 +121,7 @@ impl Bitmap256 {
         }
     }
     fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
-        wr.write_annotated_num_slice::<8, u64>(name, &self.bits)
+        wr.write_annotated_num_slice::<8, u64, &str>(name, &self.bits)
     }
 }
 
@@ -139,13 +140,16 @@ impl LayerMeta {
     }
 
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
+        wr.push_context("layer_meta");
         let pos = wr.pos()?;
         wr.write_annotated_num("rows", self.rows)?;
         wr.write_annotated_num("cols", self.cols)?;
         wr.write_annotated_num_slice("block_offsets", &self.block_offsets)?;
         wr.write_annotated_num_slice("block_lengths", &self.block_lengths)?;
         let pos2 = wr.pos()?;
-        wr.write_annotated_num("layer meta len", (pos2 - pos) as i64)
+        wr.write_annotated_num("self_len", (pos2 - pos) as i64)?;
+        wr.pop_context();
+        Ok(())
     }
 }
 
@@ -163,13 +167,16 @@ struct BlockMeta {
 
 impl BlockMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
+        wr.push_context("block_meta");
         let pos = wr.pos()?;
         wr.write_annotated_num_slice("track_lo_vals", &self.track_lo_vals)?;
         wr.write_annotated_num_slice("track_hi_vals", &self.track_hi_vals)?;
         self.track_implicit.write_annotated("track_implicit", wr)?;
         wr.write_annotated_num_slice("track_rows", &self.track_rows)?;
         let pos2 = wr.pos()?;
-        wr.write_annotated_num("block meta len", (pos2 - pos) as i64)
+        wr.write_annotated_num("self_len", (pos2 - pos) as i64)?;
+        wr.pop_context();
+        Ok(())
     }
 }
 
@@ -307,6 +314,7 @@ struct TrackMeta {
 
 impl TrackMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
+        wr.push_context("track_meta");
         let pos = wr.pos()?;
         self.chunk_populated
             .write_annotated("chunk_populated", wr)?;
@@ -326,7 +334,9 @@ impl TrackMeta {
         wr.write_annotated_num_slice("chunk_dict_lo_codes", &self.chunk_dict_lo_codes)?;
         wr.write_annotated_num_slice("chunk_dict_hi_codes", &self.chunk_dict_hi_codes)?;
         let pos2 = wr.pos()?;
-        wr.write_annotated_num("track meta len", (pos2 - pos) as i64)
+        wr.write_annotated_num("self_len", (pos2 - pos) as i64)?;
+        wr.pop_context();
+        Ok(())
     }
 }
 
@@ -480,61 +490,94 @@ fn write_one_or_two_byte_dict_code_chunk(
     any_two_bytes: bool,
     wr: &mut impl Writer,
 ) -> Result<()> {
+    wr.push_context("code_lanes");
     if any_two_bytes {
-        wr.write_lane_of_annotated_num_slice("chunk codes hi lane", 1, vals)?;
+        wr.write_lane_of_annotated_num_slice("hi_lane", 1, vals)?;
     }
-    wr.write_lane_of_annotated_num_slice("chunk codes lo lane", 0, vals)
+    wr.write_lane_of_annotated_num_slice("lo_lane", 0, vals)?;
+    wr.pop_context();
+    Ok(())
 }
 
-pub(crate) trait DictVal: Eq + Ord {
-    fn get_subcol_count(&self) -> usize {
-        1
-    }
-    fn get_subcol_as_word(&self, i: usize) -> i64;
-    fn write_dict_vals(vals: &[&Self], wr: &mut impl Writer) -> Result<()>;
-}
+pub(crate) trait DictEntry: Eq + Ord {
 
-impl DictVal for i64 {
-    fn get_subcol_as_word(&self, i: usize) -> i64 {
-        *self
-    }
-    fn write_dict_vals(vals: &[&i64], wr: &mut impl Writer) -> Result<()> {
-        for chunk in vals.chunks(256) {
-            let subcols = chunk
+    fn get_component_count(&self) -> usize;
+    fn get_component_name(i: usize) -> &'static str;
+    fn get_component_as_int(&self, component: usize) -> i64;
+
+    fn write_entries(vals: &[&Self], wr: &mut impl Writer) -> Result<()> {
+        wr.push_context("entries");
+        for (c, chunk) in vals.chunks(256).enumerate() {
+            wr.push_context(c);
+            let n_components = chunk
                 .iter()
-                .map(|x| x.get_subcol_count())
+                .map(|x| x.get_component_count())
                 .max()
                 .unwrap_or(1);
-            for subcol in 0..subcols {
+            for component in 0..n_components {
+                if n_components > 1 {
+                    wr.push_context(Self::get_component_name(component));
+                }
                 let vals = chunk
                     .iter()
-                    .map(|x| x.get_subcol_as_word(subcol))
+                    .map(|x| x.get_component_as_int(component))
                     .collect::<Vec<i64>>();
                 let (wordty, shift) = select_word_ty_and_shift(&vals);
                 match wordty {
                     WordTy::Word1 => {
                         let vals = vals.iter().map(|x| *x as u8).collect::<Vec<u8>>();
-                        wr.write_annotated_byte_slice("dict vals", &vals)?;
+                        wr.write_annotated_byte_slice("word1s", &vals)?;
                     }
                     WordTy::Word2 => {
                         let vals = vals.iter().map(|x| *x as u16).collect::<Vec<u16>>();
-                        wr.write_annotated_num_slice("dict vals", &vals)?;
+                        wr.write_annotated_num_slice("word2s", &vals)?;
                     }
                     WordTy::Word4 => {
                         let vals = vals.iter().map(|x| *x as u32).collect::<Vec<u32>>();
-                        wr.write_annotated_num_slice("dict vals", &vals)?;
+                        wr.write_annotated_num_slice("word4s", &vals)?;
                     }
                     WordTy::Word8 => {
-                        wr.write_annotated_num_slice("dict vals", &vals)?;
+                        wr.write_annotated_num_slice("word8s", &vals)?;
                     }
                 }
+                if n_components > 1 {
+                    wr.pop_context();
+                }
             }
+            wr.pop_context();
         }
+        wr.pop_context();
         Ok(())
     }
 }
 
-pub(crate) fn encode_track<T: DictVal, W: Writer>(vals: &[T], wr: &mut W) -> Result<TrackMeta> {
+impl DictEntry for i64 {
+    fn get_component_count(&self) -> usize {
+        1
+    }
+    fn get_component_name(i: usize) -> &'static str {
+        "int"
+    }
+    fn get_component_as_int(&self, _component: usize) -> i64 {
+        *self
+    }
+}
+
+impl DictEntry for OrderedFloat<f64> {
+    fn get_component_count(&self) -> usize {
+        1
+    }
+    fn get_component_name(i: usize) -> &'static str {
+        "flo"
+    }
+    fn get_component_as_int(&self, _component: usize) -> i64 {
+        self.0 as i64
+    }
+}
+
+
+pub(crate) fn encode_track<T: DictEntry, W: Writer>(vals: &[T], wr: &mut W) -> Result<TrackMeta> {
+    wr.push_context("track");
     let mut tm = TrackMeta::default();
 
     let (dict, codes) = dict_encode(vals)?;
@@ -546,10 +589,14 @@ pub(crate) fn encode_track<T: DictVal, W: Writer>(vals: &[T], wr: &mut W) -> Res
         return Ok(tm);
     }
     let max_dict_code = (dict.len() - 1) as u16;
-    wr.write_annotated_num("dict len", dict.len() as u16)?;
-    T::write_dict_vals(&dict, wr)?;
+    wr.push_context("dict");
+    wr.write_annotated_num("len", dict.len() as u16)?;
+    T::write_entries(&dict, wr)?;
+    wr.pop_context(); // dict
 
+    wr.push_context("code_chunks");
     for (c, chunk) in codes.chunks(256).enumerate() {
+        wr.push_context(c);
         // First decide whether the codes in this chunk need 2 bytes.
         let mut chunk_two_bytes = false;
         let mut chunk_min_code = max_dict_code;
@@ -581,12 +628,15 @@ pub(crate) fn encode_track<T: DictVal, W: Writer>(vals: &[T], wr: &mut W) -> Res
             tm.chunk_has_recol.set(c, true);
             let run_vals = run_vals.iter().map(|x| **x).collect::<Vec<u16>>();
             write_one_or_two_byte_dict_code_chunk(&run_vals, chunk_two_bytes, wr)?;
-            wr.write_annotated_num_slice("chunk code run ends", &run_ends)?;
+            wr.write_annotated_num_slice("run_ends", &run_ends)?;
         } else {
             // No point, REE actually takes more space.
             write_one_or_two_byte_dict_code_chunk(chunk, chunk_two_bytes, wr)?;
         }
+        wr.pop_context();
     }
+    wr.pop_context(); // code_chunks
+    wr.pop_context(); // track
     Ok(tm)
 }
 
