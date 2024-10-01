@@ -121,7 +121,10 @@ impl Bitmap256 {
         }
     }
     fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
-        wr.write_annotated_num_slice::<8, u64, &str>(name, &self.bits)
+        wr.push_context(name);
+        wr.write_annotated_num_slice::<8, u64, &str>("bitmap", &self.bits)?;
+        wr.pop_context();
+        Ok(())
     }
 }
 
@@ -140,7 +143,7 @@ impl LayerMeta {
     }
 
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
-        wr.push_context("layer_meta");
+        wr.push_context("meta");
         let pos = wr.pos()?;
         wr.write_annotated_num("rows", self.rows)?;
         wr.write_annotated_num("cols", self.cols)?;
@@ -167,7 +170,7 @@ struct BlockMeta {
 
 impl BlockMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
-        wr.push_context("block_meta");
+        wr.push_context("meta");
         let pos = wr.pos()?;
         wr.write_annotated_num_slice("track_lo_vals", &self.track_lo_vals)?;
         wr.write_annotated_num_slice("track_hi_vals", &self.track_hi_vals)?;
@@ -314,7 +317,7 @@ struct TrackMeta {
 
 impl TrackMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
-        wr.push_context("track_meta");
+        wr.push_context("meta");
         let pos = wr.pos()?;
         self.chunk_populated
             .write_annotated("chunk_populated", wr)?;
@@ -577,7 +580,6 @@ impl DictEntry for OrderedFloat<f64> {
 
 
 pub(crate) fn encode_track<T: DictEntry, W: Writer>(vals: &[T], wr: &mut W) -> Result<TrackMeta> {
-    wr.push_context("track");
     let mut tm = TrackMeta::default();
 
     let (dict, codes) = dict_encode(vals)?;
@@ -596,7 +598,7 @@ pub(crate) fn encode_track<T: DictEntry, W: Writer>(vals: &[T], wr: &mut W) -> R
 
     wr.push_context("code_chunks");
     for (c, chunk) in codes.chunks(256).enumerate() {
-        wr.push_context(c);
+        wr.push_context(c); // chunk_num
         // First decide whether the codes in this chunk need 2 bytes.
         let mut chunk_two_bytes = false;
         let mut chunk_min_code = max_dict_code;
@@ -633,10 +635,9 @@ pub(crate) fn encode_track<T: DictEntry, W: Writer>(vals: &[T], wr: &mut W) -> R
             // No point, REE actually takes more space.
             write_one_or_two_byte_dict_code_chunk(chunk, chunk_two_bytes, wr)?;
         }
-        wr.pop_context();
+        wr.pop_context(); // chunk_num
     }
     wr.pop_context(); // code_chunks
-    wr.pop_context(); // track
     Ok(tm)
 }
 

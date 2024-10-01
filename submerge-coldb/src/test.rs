@@ -35,13 +35,19 @@ fn test_byte_width_and_shift() {
 #[test]
 fn test_annotations() -> Result<()> {
     let mut w = MemWriter::new();
+    w.push_context("layer");
     let lm = LayerMeta::default();
     lm.write_magic_header(&mut w)?;
+    w.push_context("block");
     let bm = BlockMeta::default();
+    w.push_context("track");
     let tm = encode_track(&[5, 5, 5, 6, 6, 6, 5, 6, 5, 3, 4, 2_i64], &mut w)?;
     tm.write(&mut w)?;
+    w.pop_context();
     bm.write(&mut w)?;
+    w.pop_context();
     lm.write(&mut w)?;
+    w.pop_context();
     eprintln!("dump:\n{}", w.render_annotations()?);
     Ok(())
 }
