@@ -60,73 +60,21 @@
 
 #![allow(dead_code, unused_variables)]
 
+use ordered_float::OrderedFloat;
 use std::{any::type_name, io::Write, ops::Range};
+use submerge_base::{err, Bitmap256, Error, Result};
 
 #[cfg(test)]
 mod test;
 
 mod ioutil;
-use ioutil::{RangeExt, Reader, Writer};
-use ordered_float::OrderedFloat;
-use submerge_base::{err, Error, Result};
+use ioutil::{Bitmap256IoExt, RangeExt, Reader, Writer};
 
-// A 32-byte / 256-bit bitmap, used both for the payload of a chunk when
-// the chunk is logical type Bit, and for the chunk bitmap in a track.
-#[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
-struct Bitmap256 {
-    bits: [u64; 4],
-}
-impl Bitmap256 {
-    fn new() -> Self {
-        Bitmap256 { bits: [0; 4] }
-    }
-    fn set(&mut self, i: usize, val: bool) {
-        if val {
-            self.bits[i / 64] |= 1 << (i % 64);
-        } else {
-            self.bits[i / 64] &= !(1 << (i % 64));
-        }
-    }
-    fn get(&self, i: usize) -> bool {
-        (self.bits[i / 64] & (1 << (i % 64))) != 0
-    }
-    fn set_all(&mut self) {
-        self.bits = [u64::MAX; 4];
-    }
-    fn clear_all(&mut self) {
-        self.bits = [0; 4];
-    }
-    fn count(&self) -> u32 {
-        self.bits.iter().map(|x| x.count_ones()).sum()
-    }
-    fn is_empty(&self) -> bool {
-        self.bits.iter().all(|x| *x == 0)
-    }
-    fn is_full(&self) -> bool {
-        self.bits.iter().all(|x| *x == u64::MAX)
-    }
-    fn union(&mut self, other: &Self) {
-        for i in 0..4 {
-            self.bits[i] |= other.bits[i];
-        }
-    }
-    fn intersect(&mut self, other: &Self) {
-        for i in 0..4 {
-            self.bits[i] &= other.bits[i];
-        }
-    }
-    fn subtract(&mut self, other: &Self) {
-        for i in 0..4 {
-            self.bits[i] &= !other.bits[i];
-        }
-    }
-    fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
-        wr.push_context(name);
-        wr.write_annotated_num_slice::<8, u64, &str>("bitmap", &self.bits)?;
-        wr.pop_context();
-        Ok(())
-    }
-}
+mod wordty;
+use wordty::{WordTy, WordTy256};
+
+mod heap;
+use heap::Heap;
 
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 struct LayerMeta {
@@ -145,12 +93,12 @@ impl LayerMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
         wr.push_context("meta");
         let pos = wr.pos()?;
-        wr.write_annotated_num("rows", self.rows)?;
-        wr.write_annotated_num("cols", self.cols)?;
-        wr.write_annotated_num_slice("block_offsets", &self.block_offsets)?;
-        wr.write_annotated_num_slice("block_lengths", &self.block_lengths)?;
+        wr.write_annotated_le_num("rows", self.rows)?;
+        wr.write_annotated_le_num("cols", self.cols)?;
+        wr.write_annotated_le_num_slice("block_offsets", &self.block_offsets)?;
+        wr.write_annotated_le_num_slice("block_lengths", &self.block_lengths)?;
         let pos2 = wr.pos()?;
-        wr.write_annotated_num("self_len", (pos2 - pos) as i64)?;
+        wr.write_annotated_le_num("self_len", (pos2 - pos) as i64)?;
         wr.pop_context();
         Ok(())
     }
@@ -172,12 +120,12 @@ impl BlockMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
         wr.push_context("meta");
         let pos = wr.pos()?;
-        wr.write_annotated_num_slice("track_lo_vals", &self.track_lo_vals)?;
-        wr.write_annotated_num_slice("track_hi_vals", &self.track_hi_vals)?;
+        wr.write_annotated_le_num_slice("track_lo_vals", &self.track_lo_vals)?;
+        wr.write_annotated_le_num_slice("track_hi_vals", &self.track_hi_vals)?;
         self.track_implicit.write_annotated("track_implicit", wr)?;
-        wr.write_annotated_num_slice("track_rows", &self.track_rows)?;
+        wr.write_annotated_le_num_slice("track_rows", &self.track_rows)?;
         let pos2 = wr.pos()?;
-        wr.write_annotated_num("self_len", (pos2 - pos) as i64)?;
+        wr.write_annotated_le_num("self_len", (pos2 - pos) as i64)?;
         wr.pop_context();
         Ok(())
     }
@@ -235,61 +183,6 @@ impl BlockMeta {
 //   - 1, 2, 4, or 8 byte values (unstriped)
 //   - 2 * 2 byte row-ranges (unstriped)
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
-enum WordTy {
-    Word1,
-    Word2,
-    Word4,
-    Word8,
-}
-
-// Wrapper for storing two bitmaps to encode
-// an array of 4-case WordTy values.
-#[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
-struct WordTy256 {
-    hi: Bitmap256,
-    lo: Bitmap256,
-}
-
-impl WordTy256 {
-    fn get_word_ty(&self, i: usize) -> WordTy {
-        match (self.hi.get(i), self.lo.get(i)) {
-            (false, false) => WordTy::Word1,
-            (false, true) => WordTy::Word2,
-            (true, false) => WordTy::Word4,
-            (true, true) => WordTy::Word8,
-        }
-    }
-    fn set_word_ty(&mut self, i: usize, ty: WordTy) {
-        match ty {
-            WordTy::Word1 => {
-                self.hi.set(i, false);
-                self.lo.set(i, false);
-            }
-            WordTy::Word2 => {
-                self.hi.set(i, false);
-                self.lo.set(i, true);
-            }
-            WordTy::Word4 => {
-                self.hi.set(i, true);
-                self.lo.set(i, false);
-            }
-            WordTy::Word8 => {
-                self.hi.set(i, true);
-                self.lo.set(i, true);
-            }
-        }
-    }
-    fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
-        wr.annotate(name, |w| {
-            for &v in self.lo.bits.iter().chain(self.hi.bits.iter()) {
-                w.write_all(&v.to_le_bytes())?;
-            }
-            Ok(())
-        })
-    }
-}
-
 // TrackMeta is nonempty only when track encoding is not Virt
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 struct TrackMeta {
@@ -306,13 +199,11 @@ struct TrackMeta {
     dict_bin_len_chunk_tys: WordTy256, // (optional) if bin: types of chunks of lengths
 
     dict_bin_large: Bitmap256, // (optional) if bin, 1 if any bin in chunk > 8 bytes
-
-    dict_chunk_tys_2: WordTy256, // (optional) if large bin: types of chunks of hashes
-    dict_chunk_tys_3: WordTy256, // (optional) if large bin: types of chunks of heap offsets
+    dict_bin_off_tys: WordTy256, // (optional) if any large bin: types of chunks of heap offsets
 
     // 256 * 4 bytes = 1k bytes
-    chunk_dict_lo_codes: Vec<u16>, // lo dict code for each populated chunk
-    chunk_dict_hi_codes: Vec<u16>, // hi dict code for each populated chunk
+    chunk_min_dict_codes: Vec<u16>, // min dict code for each populated chunk
+    chunk_max_dict_codes: Vec<u16>, // max dict code for each populated chunk
 }
 
 impl TrackMeta {
@@ -330,14 +221,13 @@ impl TrackMeta {
         self.dict_bin_len_chunk_tys
             .write_annotated("dict_bin_len_chunk_tys", wr)?;
         self.dict_bin_large.write_annotated("dict_bin_large", wr)?;
-        self.dict_chunk_tys_2
-            .write_annotated("dict_chunk_tys_2", wr)?;
-        self.dict_chunk_tys_3
-            .write_annotated("dict_chunk_tys_3", wr)?;
-        wr.write_annotated_num_slice("chunk_dict_lo_codes", &self.chunk_dict_lo_codes)?;
-        wr.write_annotated_num_slice("chunk_dict_hi_codes", &self.chunk_dict_hi_codes)?;
+        if self.dict_bin_large.any() {
+            self.dict_bin_off_tys.write_annotated("dict_off_tys", wr)?;
+        }
+        wr.write_annotated_le_num_slice("chunk_min_dict_codes", &self.chunk_min_dict_codes)?;
+        wr.write_annotated_le_num_slice("chunk_max_dict_codes", &self.chunk_max_dict_codes)?;
         let pos2 = wr.pos()?;
-        wr.write_annotated_num("self_len", (pos2 - pos) as i64)?;
+        wr.write_annotated_le_num("self_len", (pos2 - pos) as i64)?;
         wr.pop_context();
         Ok(())
     }
@@ -495,20 +385,20 @@ fn write_one_or_two_byte_dict_code_chunk(
 ) -> Result<()> {
     wr.push_context("code_lanes");
     if any_two_bytes {
-        wr.write_lane_of_annotated_num_slice("hi_lane", 1, vals)?;
+        wr.write_be_lane_of_annotated_num_slice("hi_lane", 0, vals)?;
     }
-    wr.write_lane_of_annotated_num_slice("lo_lane", 0, vals)?;
+    wr.write_be_lane_of_annotated_num_slice("lo_lane", 1, vals)?;
     wr.pop_context();
     Ok(())
 }
 
-pub(crate) trait DictEntry: Eq + Ord {
-
+pub(crate) trait DictEncodable: Eq + Ord {
     fn get_component_count(&self) -> usize;
     fn get_component_name(i: usize) -> &'static str;
-    fn get_component_as_int(&self, component: usize) -> i64;
+    fn get_component_as_int(&self, component: usize, heap: &mut Heap) -> i64;
 
-    fn write_entries(vals: &[&Self], wr: &mut impl Writer) -> Result<()> {
+    fn write_dict_entries(vals: &[&Self], wr: &mut impl Writer) -> Result<()> {
+        let mut heap = Heap::default();
         wr.push_context("entries");
         for (c, chunk) in vals.chunks(256).enumerate() {
             wr.push_context(c);
@@ -523,30 +413,20 @@ pub(crate) trait DictEntry: Eq + Ord {
                 }
                 let vals = chunk
                     .iter()
-                    .map(|x| x.get_component_as_int(component))
+                    .map(|x| x.get_component_as_int(component, &mut heap))
                     .collect::<Vec<i64>>();
-                let (wordty, shift) = select_word_ty_and_shift(&vals);
-                match wordty {
-                    WordTy::Word1 => {
-                        let vals = vals.iter().map(|x| *x as u8).collect::<Vec<u8>>();
-                        wr.write_annotated_byte_slice("word1s", &vals)?;
-                    }
-                    WordTy::Word2 => {
-                        let vals = vals.iter().map(|x| *x as u16).collect::<Vec<u16>>();
-                        wr.write_annotated_num_slice("word2s", &vals)?;
-                    }
-                    WordTy::Word4 => {
-                        let vals = vals.iter().map(|x| *x as u32).collect::<Vec<u32>>();
-                        wr.write_annotated_num_slice("word4s", &vals)?;
-                    }
-                    WordTy::Word8 => {
-                        wr.write_annotated_num_slice("word8s", &vals)?;
-                    }
-                }
+                let (min, wordty) = WordTy::select_min_and_ty(&vals);
+                wr.write_annotated_le_wordty_slice("words", &vals, wordty)?;
                 if n_components > 1 {
                     wr.pop_context();
                 }
             }
+            wr.pop_context();
+        }
+        if heap.data.len() > 0 {
+            wr.push_context("heap");
+            wr.write_annotated_le_num("len", heap.data.len())?;
+            wr.write_annotated_byte_slice("data", &heap.data)?;
             wr.pop_context();
         }
         wr.pop_context();
@@ -554,32 +434,79 @@ pub(crate) trait DictEntry: Eq + Ord {
     }
 }
 
-impl DictEntry for i64 {
+impl DictEncodable for i64 {
     fn get_component_count(&self) -> usize {
         1
     }
     fn get_component_name(i: usize) -> &'static str {
         "int"
     }
-    fn get_component_as_int(&self, _component: usize) -> i64 {
+    fn get_component_as_int(&self, _component: usize, _heap: &mut Heap) -> i64 {
         *self
     }
 }
 
-impl DictEntry for OrderedFloat<f64> {
+impl DictEncodable for OrderedFloat<f64> {
     fn get_component_count(&self) -> usize {
         1
     }
     fn get_component_name(i: usize) -> &'static str {
         "flo"
     }
-    fn get_component_as_int(&self, _component: usize) -> i64 {
-        self.0 as i64
+    fn get_component_as_int(&self, _component: usize, _heap: &mut Heap) -> i64 {
+        let bytes = self.0.to_le_bytes();
+        i64::from_le_bytes(bytes)
     }
 }
 
+impl DictEncodable for &[u8] {
+    fn get_component_count(&self) -> usize {
+        if self.len() > 8 {
+            // prefix, len, hash, offset
+            4
+        } else {
+            // prefix, len
+            2
+        }
+    }
+    fn get_component_name(i: usize) -> &'static str {
+        match i {
+            0 => "prefix",
+            1 => "len",
+            2 => "hash",
+            3 => "offset",
+            _ => unreachable!(),
+        }
+    }
+    fn get_component_as_int(&self, component: usize, heap: &mut Heap) -> i64 {
+        match component {
+            0 => {
+                // We treat the first 8 byte prefix of the string as a
+                // big-endian i64, which should I think sort strings
+                // byte-lexicographically. Eventually we should use
+                // a collator here, like the UCA DUCET sequence.
+                let mut buf = [0_u8; 8];
+                let n = self.len().min(8);
+                buf[..n].copy_from_slice(&self[..n]);
+                i64::from_be_bytes(buf)
+            }
+            1 => self.len() as i64,
+            // We emit a small 16-bit hash of the bin; we don't want
+            // to use a full 64-bit hash because that would use too
+            // much space for too little benefit. By the time you've
+            // filtered by length and prefix you're down to a small
+            // collision probability already. 1/65536 more is plenty.
+            2 => (rapidhash::rapidhash(self) & 0xffff) as i64,
+            3 => heap.add(self) as i64,
+            _ => unreachable!(),
+        }
+    }
+}
 
-pub(crate) fn encode_track<T: DictEntry, W: Writer>(vals: &[T], wr: &mut W) -> Result<TrackMeta> {
+pub(crate) fn encode_track<T: DictEncodable, W: Writer>(
+    vals: &[T],
+    wr: &mut W,
+) -> Result<TrackMeta> {
     let mut tm = TrackMeta::default();
 
     let (dict, codes) = dict_encode(vals)?;
@@ -592,31 +519,31 @@ pub(crate) fn encode_track<T: DictEntry, W: Writer>(vals: &[T], wr: &mut W) -> R
     }
     let max_dict_code = (dict.len() - 1) as u16;
     wr.push_context("dict");
-    wr.write_annotated_num("len", dict.len() as u16)?;
-    T::write_entries(&dict, wr)?;
+    wr.write_annotated_le_num("len", dict.len() as u16)?;
+    T::write_dict_entries(&dict, wr)?;
     wr.pop_context(); // dict
 
     wr.push_context("code_chunks");
     for (c, chunk) in codes.chunks(256).enumerate() {
         wr.push_context(c); // chunk_num
-        // First decide whether the codes in this chunk need 2 bytes.
+                            // First decide whether the codes in this chunk need 2 bytes.
         let mut chunk_two_bytes = false;
-        let mut chunk_min_code = max_dict_code;
-        let mut chunk_max_code = 0;
+        let mut chunk_min_dict_code = max_dict_code;
+        let mut chunk_max_dict_code = 0;
 
         for &code in chunk {
             if code > 0xff {
                 chunk_two_bytes = true;
             }
-            if code < chunk_min_code {
-                chunk_min_code = code;
+            if code < chunk_min_dict_code {
+                chunk_min_dict_code = code;
             }
-            if code > chunk_max_code {
-                chunk_max_code = code;
+            if code > chunk_max_dict_code {
+                chunk_max_dict_code = code;
             }
         }
-        tm.chunk_dict_lo_codes.push(chunk_min_code);
-        tm.chunk_dict_hi_codes.push(chunk_max_code);
+        tm.chunk_min_dict_codes.push(chunk_min_dict_code);
+        tm.chunk_max_dict_codes.push(chunk_max_dict_code);
 
         tm.chunk_two_bytes.set(c, chunk_two_bytes);
 
@@ -630,7 +557,7 @@ pub(crate) fn encode_track<T: DictEntry, W: Writer>(vals: &[T], wr: &mut W) -> R
             tm.chunk_has_recol.set(c, true);
             let run_vals = run_vals.iter().map(|x| **x).collect::<Vec<u16>>();
             write_one_or_two_byte_dict_code_chunk(&run_vals, chunk_two_bytes, wr)?;
-            wr.write_annotated_num_slice("run_ends", &run_ends)?;
+            wr.write_annotated_le_num_slice("run_ends", &run_ends)?;
         } else {
             // No point, REE actually takes more space.
             write_one_or_two_byte_dict_code_chunk(chunk, chunk_two_bytes, wr)?;
@@ -644,38 +571,6 @@ pub(crate) fn encode_track<T: DictEntry, W: Writer>(vals: &[T], wr: &mut W) -> R
 struct ChunkMeta {
     range: Range<u16>,
     bin_large: bool,
-}
-
-/// Returns the number of bytes, and the left shift, necessary to reconstruct
-/// a given column of i64 values. Note that all the i64 values should be
-/// positive (offsets from a FOR base) otherwise the result will spend bytes
-/// storing the extended sign bits.
-pub(crate) fn byte_width_and_shift(vals: &[i64]) -> (u8, u8) {
-    let mut accum: u64 = 0;
-    let mut shift: u8 = 0;
-    let mut width: u8 = 0;
-    for v in vals.iter() {
-        accum |= *v as u64;
-    }
-    while accum != 0 && accum & 0xff == 0 {
-        shift += 1;
-        accum >>= 8;
-    }
-    while accum != 0 {
-        width += 1;
-        accum >>= 8;
-    }
-    (width, shift)
-}
-fn select_word_ty_and_shift(vals: &[i64]) -> (WordTy, u8) {
-    let (byte_width, byte_shift) = byte_width_and_shift(vals);
-    let wordty = match byte_width {
-        1 => WordTy::Word1,
-        2 => WordTy::Word2,
-        3 | 4 => WordTy::Word4,
-        _ => WordTy::Word8,
-    };
-    (wordty, byte_shift)
 }
 
 struct LayerReader {}

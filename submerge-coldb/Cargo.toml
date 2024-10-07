@@ -11,6 +11,8 @@ publish.workspace = true
 submerge-base = { path = "../submerge-base" }
 funty.workspace = true
 ordered-float.workspace = true
+rapidhash.workspace = true
+memchr.workspace = true
 
 [dev-dependencies]
 test-log.workspace = true

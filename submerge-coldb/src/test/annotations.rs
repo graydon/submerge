@@ -20,7 +20,7 @@ impl Annotations {
     pub fn pop_context(&mut self) {
         self.context.pop();
     }
-    pub fn annotate<T:ToString>(&mut self, range: Range<i64>, name: T) {
+    pub fn annotate<T: ToString>(&mut self, range: Range<i64>, name: T) {
         let mut ctx = self.context.clone();
         ctx.push(name.to_string());
         self.annotations.push((range, ctx));

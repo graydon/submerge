@@ -4,10 +4,11 @@ use std::{
     path::{Display, PathBuf},
     sync::Arc,
 };
-use submerge_base::Result;
+use submerge_base::{err, Bitmap256, Result};
 
 #[cfg(test)]
 use crate::test::annotations::Annotations;
+use crate::WordTy;
 #[cfg(not(test))]
 struct Annotations;
 #[cfg(not(test))]
@@ -15,8 +16,8 @@ impl Annotations {
     fn new() -> Self {
         Self
     }
-    fn annotate<T:ToString>(&mut self, _range: std::ops::Range<i64>, _name: &T) {}
-    fn push_context<T:ToString>(&mut self, _context: T) {}
+    fn annotate<T: ToString>(&mut self, _range: std::ops::Range<i64>, _name: &T) {}
+    fn push_context<T: ToString>(&mut self, _context: T) {}
     fn pop_context(&mut self) {}
 }
 
@@ -47,13 +48,17 @@ pub trait Writer: Write + Seek + Send + Sized {
         self.pos()
     }
     #[cfg(test)]
-    fn annotate_to_pos_from<T:ToString>(&mut self, name: T, start: i64) -> Result<()> {
+    fn annotate_to_pos_from<T: ToString>(&mut self, name: T, start: i64) -> Result<()> {
         let pos = self.annotate_pos()?;
         self.get_annotations().annotate((start..pos).into(), name);
         Ok(())
     }
     #[cfg(test)]
-    fn annotate<T,N:ToString>(&mut self, name: N, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+    fn annotate<T, N: ToString>(
+        &mut self,
+        name: N,
+        f: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
         let start = self.annotate_pos()?;
         let ok = f(self)?;
         self.annotate_to_pos_from(name, start)?;
@@ -72,28 +77,50 @@ pub trait Writer: Write + Seek + Send + Sized {
         Ok(0)
     }
     #[cfg(not(test))]
-    fn annotate_to_pos_from<T:ToString>(&mut self, name: T, start: i64) -> Result<()> {
+    fn annotate_to_pos_from<T: ToString>(&mut self, name: T, start: i64) -> Result<()> {
         Ok(())
     }
     #[cfg(not(test))]
-    fn annotate<T,N:ToString>(&mut self, name: N, f: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+    fn annotate<T, N: ToString>(
+        &mut self,
+        name: N,
+        f: impl FnOnce(&mut Self) -> Result<T>,
+    ) -> Result<T> {
         f(self)
     }
     #[cfg(not(test))]
     fn push_context<T: ToString>(&mut self, _context: T) {}
     #[cfg(not(test))]
     fn pop_context(&mut self) {}
-    fn write_annotated_byte_slice<T:ToString>(&mut self, name: T, val: &[u8]) -> Result<()> {
+    fn write_annotated_byte_slice<T: ToString>(&mut self, name: T, val: &[u8]) -> Result<()> {
         self.annotate(name, |w| Ok(w.write_all(val)?))
     }
-    fn write_annotated_num<const N: usize, T: funty::Numeric<Bytes = [u8; N]>, NM:ToString>(
+    fn write_annotated_le_num<const N: usize, T: funty::Numeric<Bytes = [u8; N]>, NM: ToString>(
         &mut self,
         name: NM,
         val: T,
     ) -> Result<()> {
         self.write_annotated_byte_slice(name, &val.to_le_bytes())
     }
-    fn write_annotated_num_slice<const N: usize, T: funty::Numeric<Bytes = [u8; N]>, NM:ToString>(
+    fn write_annotated_le_wordty_slice(
+        &mut self,
+        name: &str,
+        val: &[i64],
+        wordty: WordTy,
+    ) -> Result<()> {
+        self.annotate(name, |w| {
+            let n = wordty.len();
+            for &v in val {
+                w.write_all(&v.to_le_bytes()[0..n])?;
+            }
+            Ok(())
+        })
+    }
+    fn write_annotated_le_num_slice<
+        const N: usize,
+        T: funty::Numeric<Bytes = [u8; N]>,
+        NM: ToString,
+    >(
         &mut self,
         name: NM,
         val: &[T],
@@ -105,7 +132,11 @@ pub trait Writer: Write + Seek + Send + Sized {
             Ok(())
         })
     }
-    fn write_lane_of_annotated_num_slice<const N: usize, T: funty::Numeric<Bytes = [u8; N]>, NM:ToString>(
+    fn write_be_lane_of_annotated_num_slice<
+        const N: usize,
+        T: funty::Numeric<Bytes = [u8; N]>,
+        NM: ToString,
+    >(
         &mut self,
         name: NM,
         lane: u8,
@@ -113,12 +144,25 @@ pub trait Writer: Write + Seek + Send + Sized {
     ) -> Result<()> {
         self.annotate(name, |w| {
             for &v in val {
-                let tmp = v.to_le_bytes();
+                let tmp = v.to_be_bytes();
                 let byte = tmp[lane as usize];
                 w.write(&[byte])?;
             }
             Ok(())
         })
+    }
+}
+
+pub(crate) trait Bitmap256IoExt {
+    fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()>;
+}
+
+impl Bitmap256IoExt for Bitmap256 {
+    fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
+        wr.push_context(name);
+        wr.write_annotated_le_num_slice::<8, u64, &str>("bitmap", &self.bits)?;
+        wr.pop_context();
+        Ok(())
     }
 }
 
