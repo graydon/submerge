@@ -47,11 +47,14 @@
 //! Every column has a unique-in-its-parent-structure _label_ and a
 //! major/minor/role type-triple.
 //!
-//! Note: a _decoded_ bin is _5_ words: prefix, hash, offset, size, _block ID_.
+//! Note: a _decoded_ bin is _5_ words: prefix, len, hash, off, _block ID_.
 //! These IDs can basically never be exhausted. Note: iterators for all
-//! int-types yield i64 values regardless of track and chunk encoding. Note:
-//! this is the same yielded-type between rowdb and coldb interfaces. Note: only
-//! _predicate pushdown_ allows pruning sliced ints before reassembly.
+//! int-types yield i64 values regardless of track and chunk encoding.
+//!
+//! Note: this is the same yielded-type between rowdb and coldb interfaces.
+//!
+//! Note: only _predicate pushdown_ allows pruning sliced ints before
+//! reassembly. No sliced ints escape this module.
 
 // Layer file contains
 // Block of columns, each contains
@@ -81,26 +84,61 @@ struct LayerMeta {
     vers: i64,
     rows: i64,
     cols: i64,
+    blocks: i64,
     block_offsets: Vec<i64>,
     block_lengths: Vec<i64>,
 }
 
 impl LayerMeta {
+
+    pub const MAGIC: &[u8;8] = b"columnar";
+    pub const VERS: i64 = 0;
+
     pub(crate) fn write_magic_header(&self, wr: &mut impl Writer) -> Result<()> {
-        wr.write_annotated_byte_slice("magic", b"columnar")
+        wr.write_annotated_byte_slice("magic", Self::MAGIC)
     }
 
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
         wr.push_context("meta");
-        let pos = wr.pos()?;
+        let start_pos = wr.pos()?;
+        wr.write_annotated_le_num("vers", Self::VERS)?;
         wr.write_annotated_le_num("rows", self.rows)?;
         wr.write_annotated_le_num("cols", self.cols)?;
+        wr.write_annotated_le_num("blocks", self.blocks)?;
         wr.write_annotated_le_num_slice("block_offsets", &self.block_offsets)?;
         wr.write_annotated_le_num_slice("block_lengths", &self.block_lengths)?;
-        let pos2 = wr.pos()?;
-        wr.write_annotated_le_num("self_len", (pos2 - pos) as i64)?;
+        wr.write_len_of_footer_starting_at(start_pos)?;
         wr.pop_context();
         Ok(())
+    }
+
+    pub(crate) fn read(rd: &mut impl Reader) -> Result<Self> {
+        rd.rewind()?;
+        let mut buf: [u8;8] = [0;8];
+        rd.read_exact(&mut buf)?;
+        if buf != *Self::MAGIC {
+            return Err(err("bad magic number"))
+        }
+        let vers: i64 = rd.read_le_num::<8, i64>()?;
+        if vers > Self::VERS {
+            return Err(err("unsupported future version number"))
+        }
+        rd.seek(std::io::SeekFrom::End(0))?;
+        rd.read_footer_len_and_rewind_to_start()?;
+        let rows = rd.read_le_num::<8, i64>()?;
+        let cols = rd.read_le_num::<8, i64>()?;
+        let blocks = rd.read_le_num::<8, i64>()?;
+        let ublocks = blocks as usize;
+        if ublocks as i64 != blocks {
+            return Err(err("bad block count"));
+        }
+        let mut block_offsets = vec![0_i64; ublocks];
+        rd.read_le_num_slice(&mut block_offsets)?;
+        let mut block_lengths = vec![0_i64; ublocks];
+        rd.read_le_num_slice(&mut block_lengths)?;
+        Ok(Self {
+            vers, rows, cols, blocks, block_offsets, block_lengths
+        })
     }
 }
 
@@ -119,13 +157,12 @@ struct BlockMeta {
 impl BlockMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
         wr.push_context("meta");
-        let pos = wr.pos()?;
+        let start_pos = wr.pos()?;
         wr.write_annotated_le_num_slice("track_lo_vals", &self.track_lo_vals)?;
         wr.write_annotated_le_num_slice("track_hi_vals", &self.track_hi_vals)?;
         self.track_implicit.write_annotated("track_implicit", wr)?;
         wr.write_annotated_le_num_slice("track_rows", &self.track_rows)?;
-        let pos2 = wr.pos()?;
-        wr.write_annotated_le_num("self_len", (pos2 - pos) as i64)?;
+        wr.write_len_of_footer_starting_at(start_pos)?;
         wr.pop_context();
         Ok(())
     }
@@ -209,7 +246,7 @@ struct TrackMeta {
 impl TrackMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
         wr.push_context("meta");
-        let pos = wr.pos()?;
+        let start_pos = wr.pos()?;
         self.chunk_populated
             .write_annotated("chunk_populated", wr)?;
         self.chunk_two_bytes
@@ -226,8 +263,7 @@ impl TrackMeta {
         }
         wr.write_annotated_le_num_slice("chunk_min_dict_codes", &self.chunk_min_dict_codes)?;
         wr.write_annotated_le_num_slice("chunk_max_dict_codes", &self.chunk_max_dict_codes)?;
-        let pos2 = wr.pos()?;
-        wr.write_annotated_le_num("self_len", (pos2 - pos) as i64)?;
+        wr.write_len_of_footer_starting_at(start_pos)?;
         wr.pop_context();
         Ok(())
     }

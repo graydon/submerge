@@ -10,15 +10,15 @@ use submerge_base::{err, Bitmap256, Result};
 use crate::test::annotations::Annotations;
 use crate::WordTy;
 #[cfg(not(test))]
-struct Annotations;
+pub(crate) struct Annotations;
 #[cfg(not(test))]
 impl Annotations {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
-    fn annotate<T: ToString>(&mut self, _range: std::ops::Range<i64>, _name: &T) {}
-    fn push_context<T: ToString>(&mut self, _context: T) {}
-    fn pop_context(&mut self) {}
+    pub(crate) fn annotate<T: ToString>(&mut self, _range: std::ops::Range<i64>, _name: &T) {}
+    pub(crate) fn push_context<T: ToString>(&mut self, _context: T) {}
+    pub(crate) fn pop_context(&mut self) {}
 }
 
 pub(crate) trait RangeExt {
@@ -32,11 +32,35 @@ impl RangeExt for std::ops::Range<i64> {
 
 // Reader and Writer
 
-pub trait Reader: Read + Seek + Send + Sized {
+pub(crate) trait Reader: Read + Seek + Send + Sized {
     fn try_clone_independent(&self) -> Result<Self>;
+    fn read_le_num<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(&mut self) -> Result<T> {
+        let mut buf: [u8; N] = [0; N];
+        self.read_exact(&mut buf)?;
+        Ok(T::from_le_bytes(buf))
+    }
+    fn read_le_num_slice<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(&mut self, slice: &mut [T]) -> Result<()> {
+        for slot in slice {
+            *slot = self.read_le_num::<N, T>()?;
+        }
+        Ok(())
+    }
+    fn read_footer_len_and_rewind_to_start(&mut self) -> Result<()> {
+        let len: i64 = self.read_le_num::<8,i64>()?;
+        if len < 0 {
+            return Err(err("negative footer len"));
+        }
+        let seek = -len;
+        if let Some(seek) = seek.checked_sub(8) {
+            self.seek(std::io::SeekFrom::Current(seek))?;
+        } else {
+            return Err(err("footer seek underflow"));
+        }
+        Ok(())
+    }
 }
 
-pub trait Writer: Write + Seek + Send + Sized {
+pub(crate) trait Writer: Write + Seek + Send + Sized {
     type PairedReader: Reader;
     fn try_into_reader(self) -> Result<Self::PairedReader>;
     fn pos(&mut self) -> Result<i64> {
@@ -101,6 +125,14 @@ pub trait Writer: Write + Seek + Send + Sized {
         val: T,
     ) -> Result<()> {
         self.write_annotated_byte_slice(name, &val.to_le_bytes())
+    }
+    fn write_len_of_footer_starting_at(&mut self, start_pos: i64) -> Result<()> {
+        let pos: i64 = self.pos()?;
+        let len: i64 = pos - start_pos;
+        if len < 0 {
+            return Err(err("negative footer len"));
+        }
+        self.write_annotated_le_num("self_len", len)
     }
     fn write_annotated_le_wordty_slice(
         &mut self,

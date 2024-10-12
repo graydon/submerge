@@ -2,31 +2,31 @@ use crate::ioutil::RangeExt;
 use std::ops::Range;
 use submerge_base::Result;
 
-pub struct Annotations {
+pub(crate) struct Annotations {
     context: Vec<String>,
     pub(crate) annotations: Vec<(Range<i64>, Vec<String>)>,
 }
 
 impl Annotations {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Annotations {
             context: Vec::new(),
             annotations: Vec::new(),
         }
     }
-    pub fn push_context<T: ToString>(&mut self, context: T) {
+    pub(crate) fn push_context<T: ToString>(&mut self, context: T) {
         self.context.push(context.to_string());
     }
-    pub fn pop_context(&mut self) {
+    pub(crate) fn pop_context(&mut self) {
         self.context.pop();
     }
-    pub fn annotate<T: ToString>(&mut self, range: Range<i64>, name: T) {
+    pub(crate) fn annotate<T: ToString>(&mut self, range: Range<i64>, name: T) {
         let mut ctx = self.context.clone();
         ctx.push(name.to_string());
         self.annotations.push((range, ctx));
     }
     #[cfg(test)]
-    pub fn render_hexdump(&self, buf: &[u8]) -> Result<String> {
+    pub(crate) fn render_hexdump(&self, buf: &[u8]) -> Result<String> {
         use std::fmt::Write;
         let mut s = String::new();
         let mut pos = 0;
@@ -110,5 +110,3 @@ impl Annotations {
         Ok(s)
     }
 }
-
-trait AnnotateWriter {}

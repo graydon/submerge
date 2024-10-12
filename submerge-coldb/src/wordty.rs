@@ -1,37 +1,5 @@
-use crate::{ioutil::Writer, DictEncodable};
+use crate::{ioutil::Writer};
 use submerge_base::{Bitmap256, Result};
-
-/// Returns the number of bytes, and the left shift (in bytes), necessary to
-/// reconstruct a given column of i64 values. Note that all the i64 values
-/// should be positive (offsets from a FOR base) otherwise the result will spend
-/// bytes storing the extended sign bits.
-fn byte_width_and_shift(vals: &[i64]) -> (u8, u8) {
-    let mut accum: u64 = 0;
-    let mut shift: u8 = 0;
-    let mut width: u8 = 0;
-    for v in vals.iter() {
-        accum |= *v as u64;
-    }
-    while accum != 0 && accum & 0xff == 0 {
-        shift += 1;
-        accum >>= 8;
-    }
-    while accum != 0 {
-        width += 1;
-        accum >>= 8;
-    }
-    (width, shift)
-}
-fn select_word_ty_and_shift(vals: &[i64]) -> (WordTy, u8) {
-    let (byte_width, byte_shift) = byte_width_and_shift(vals);
-    let wordty = match byte_width {
-        1 => WordTy::Word1,
-        2 => WordTy::Word2,
-        3 | 4 => WordTy::Word4,
-        _ => WordTy::Word8,
-    };
-    (wordty, byte_shift)
-}
 
 #[derive(Clone, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub(crate) enum WordTy {
