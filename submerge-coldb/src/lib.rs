@@ -27,8 +27,10 @@
 //! Explicit bit-typed tracks store their values as bitmaps.
 //!
 //! Explicit non-bit tracks store their values uniquely and sorted in a sequence
-//! of dictionary chunks and run-end-encoded code chunks. These allow by-value
-//! point loads and efficient range scans.
+//! of dictionary chunks and optionally-run-end-encoded and byte-sliced
+//! dict-code chunks. These allow by-value point loads (by binary search in the
+//! track dictionary) and efficient range scans (by bytewise-SIMD-scanning the
+//! dict-code chunks).
 //!
 //! Bin-typed dictionaries vary their chunk content depending on whether the
 //! chunk contains any "long" values -- those longer than 8 bytes. If so, the
@@ -76,17 +78,16 @@ use ioutil::{Bitmap256IoExt, RangeExt, Reader, Writer};
 mod wordty;
 use wordty::{WordTy, WordTy256};
 
+mod dict;
+use dict::DictEncodable;
 mod heap;
-use heap::Heap;
 
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 struct LayerMeta {
     vers: i64,
     rows: i64,
     cols: i64,
-    blocks: i64,
-    block_offsets: Vec<i64>,
-    block_lengths: Vec<i64>,
+    block_end_offsets: Vec<i64>,
 }
 
 impl LayerMeta {
@@ -95,6 +96,7 @@ impl LayerMeta {
     pub const VERS: i64 = 0;
 
     pub(crate) fn write_magic_header(&self, wr: &mut impl Writer) -> Result<()> {
+        wr.rewind()?;
         wr.write_annotated_byte_slice("magic", Self::MAGIC)
     }
 
@@ -104,9 +106,13 @@ impl LayerMeta {
         wr.write_annotated_le_num("vers", Self::VERS)?;
         wr.write_annotated_le_num("rows", self.rows)?;
         wr.write_annotated_le_num("cols", self.cols)?;
-        wr.write_annotated_le_num("blocks", self.blocks)?;
-        wr.write_annotated_le_num_slice("block_offsets", &self.block_offsets)?;
-        wr.write_annotated_le_num_slice("block_lengths", &self.block_lengths)?;
+        let ublocks = self.block_end_offsets.len();
+        let blocks = ublocks as i64;
+        if blocks != ublocks as i64 {
+            return Err(err("bad block count"));
+        }
+        wr.write_annotated_le_num("blocks", blocks)?;
+        wr.write_annotated_le_num_slice("block_end_offsets", &self.block_end_offsets)?;
         wr.write_len_of_footer_starting_at(start_pos)?;
         wr.pop_context();
         Ok(())
@@ -119,25 +125,23 @@ impl LayerMeta {
         if buf != *Self::MAGIC {
             return Err(err("bad magic number"))
         }
-        let vers: i64 = rd.read_le_num::<8, i64>()?;
+        let vers: i64 = rd.read_le_num()?;
         if vers > Self::VERS {
             return Err(err("unsupported future version number"))
         }
         rd.seek(std::io::SeekFrom::End(0))?;
         rd.read_footer_len_and_rewind_to_start()?;
-        let rows = rd.read_le_num::<8, i64>()?;
-        let cols = rd.read_le_num::<8, i64>()?;
-        let blocks = rd.read_le_num::<8, i64>()?;
+        let rows: i64 = rd.read_le_num()?;
+        let cols: i64 = rd.read_le_num()?;
+        let blocks: i64 = rd.read_le_num()?;
         let ublocks = blocks as usize;
         if ublocks as i64 != blocks {
             return Err(err("bad block count"));
         }
-        let mut block_offsets = vec![0_i64; ublocks];
-        rd.read_le_num_slice(&mut block_offsets)?;
-        let mut block_lengths = vec![0_i64; ublocks];
-        rd.read_le_num_slice(&mut block_lengths)?;
+        let mut block_end_offsets = vec![0_i64; ublocks];
+        rd.read_le_num_slice(&mut block_end_offsets)?;
         Ok(Self {
-            vers, rows, cols, blocks, block_offsets, block_lengths
+            vers, rows, cols, block_end_offsets
         })
     }
 }
@@ -146,79 +150,93 @@ struct LayerWriter {
     meta: LayerMeta,
 }
 
+impl LayerWriter {
+    pub(crate) fn new(wr: &mut impl Writer) -> Result<Self> {
+        wr.push_context("layer");
+        let meta = LayerMeta::default();
+        meta.write_magic_header(wr)?;
+        Ok(LayerWriter {
+            meta,
+        })
+    }
+
+    pub(crate) fn begin_block(self, wr: &mut impl Writer) -> BlockWriter {
+        BlockWriter::new(self, wr)
+    }
+
+    pub(crate) fn finish_layer(self, wr: &mut impl Writer) -> Result<()> {
+        self.meta.write(wr)?;
+        wr.pop_context();
+        Ok(())
+    }
+}
+
+struct BlockWriter {
+    layer_writer: LayerWriter,
+    meta: BlockMeta,
+}
+
+impl BlockWriter {
+    pub(crate) fn new(layer_writer: LayerWriter, wr: &mut impl Writer) -> Self {
+        wr.push_context("block");
+        wr.push_context(layer_writer.meta.block_end_offsets.len());
+        BlockWriter {
+            layer_writer,
+            meta: BlockMeta::default(),
+        }
+    }
+
+    pub(crate) fn begin_track(self, wr: &mut impl Writer) -> Result<TrackWriter> {
+        TrackWriter::new(self, wr)
+    }
+
+    pub(crate) fn finish_block(mut self, wr: &mut impl Writer) -> Result<LayerWriter> {
+        self.meta.write(wr)?;
+        wr.pop_context();
+        wr.pop_context();
+        let pos = wr.pos()?;
+        self.layer_writer.meta.block_end_offsets.push(pos);
+        Ok(self.layer_writer)
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 struct BlockMeta {
     track_lo_vals: Vec<i64>,
     track_hi_vals: Vec<i64>,
     track_implicit: Bitmap256,
     track_rows: Vec<u16>, // row count for each track; may vary across substructure tracks
+    track_end_offsets: Vec<i64>,
 }
 
 impl BlockMeta {
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
+        let ntracks = self.track_lo_vals.len();
+        if ntracks != self.track_hi_vals.len() {
+            return Err(err("track_lo_vals and track_hi_vals length mismatch"));
+        }
+        if ntracks > 256 {
+            return Err(err("track count > 256"));
+        }
+        if ntracks != self.track_rows.len() as usize {
+            return Err(err("track_lo_vals and track_rows length mismatch"));
+        }
+        if ntracks != self.track_end_offsets.len() as usize {
+            return Err(err("track_lo_vals and track_end_offsets length mismatch"));
+        }
         wr.push_context("meta");
         let start_pos = wr.pos()?;
         wr.write_annotated_le_num_slice("track_lo_vals", &self.track_lo_vals)?;
         wr.write_annotated_le_num_slice("track_hi_vals", &self.track_hi_vals)?;
         self.track_implicit.write_annotated("track_implicit", wr)?;
         wr.write_annotated_le_num_slice("track_rows", &self.track_rows)?;
+        wr.write_annotated_le_num_slice("track_end_offsets", &self.track_end_offsets)?;
         wr.write_len_of_footer_starting_at(start_pos)?;
         wr.pop_context();
         Ok(())
     }
 }
 
-// What if for physical coding we go even simpler:
-//
-//  - Every non-bit track is dict-encoded, always. We need to for f64 and bin
-//    anyways, and if we also do so for ints then we're always _scanning_ 1 or
-//    2-byte columns after a dict lookup; the dict is sorted and contents are
-//    probed with binary search anyways so it doesn't benefit from SIMD, doesn't
-//    need slicing. We can shift and size-class the dict content words at least.
-//
-//       - Dict means a point-binsearch that fails => value not in track (even
-//         if the value is inside the _range_ of the track).
-//
-//       - So this is a partial solution to the point-query question. And if
-//         there is a _hit_ then the value returned is a dict code, and if
-//         there's a unique chunk holding that code (i.e. truly a point lookup)
-//         then only one chunk range will hold it, but determining that will
-//         only require looking at 256 chunk ranges and then finding the row
-//         inside the chunk: 3 256-byte reads + 1 final-byte read to confirm the
-//         second byte of the row. It's not nothing but not super expensive.
-//
-//       - Dict also lets you do a range query by 2 binsearches + a 1-or-2 byte
-//         scan, limited to those chunk-ranges that intersect. This is
-//         potentially cheaper then a multi-stripe scan.
-//
-//       - A 64k-entry binsearch is <= 16 iterations, which is not bad.
-//
-//  - Further, we can run-end-encode the dict codes, and the run-ends are all 2
-//    byte words also. The dict codes themselves may benefit from slicing, but
-//    _only_ them. We can have 1 bitmap that says whether the dict codes are
-//    1-byte or 2-byte (chunk by chunk), and another bitmap that indicates
-//    whether each chunk is accompanied by a chunk of run-end numbers, or if all
-//    runs are implicitly 1-row long.
-//
-//  - The chunk ranges / FOR anchors of each chunk are then only 2-byte words,
-//    since they're dict codes too.
-//
-//  - So our physical track forms are:
-//    - direct (maybe shifted, maybe 1, 2, 4 or 8-byte) cols for bin/int/flo
-//      dict contents
-//    - direct 2-byte cols for run-end numbers or multi-sructure numbers
-//    - sliced 1-byte or 2-byte cols for dict-code chunks
-//
-//
-// Ok so a chunk has:
-//
-//   - 1 or 2 byte dict codes (striped)
-//   - 0 or 2 byte run-ends (unstriped)
-//
-// And a track dict has:
-//
-//   - 1, 2, 4, or 8 byte values (unstriped)
-//   - 2 * 2 byte row-ranges (unstriped)
 
 // TrackMeta is nonempty only when track encoding is not Virt
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -268,6 +286,32 @@ impl TrackMeta {
         Ok(())
     }
 }
+
+struct TrackWriter {
+    block_writer: BlockWriter,
+    meta: TrackMeta,
+}
+
+impl TrackWriter {
+    pub(crate) fn new(block_writer: BlockWriter, wr: &mut impl Writer) -> Result<Self> {
+        wr.push_context("track");
+        wr.push_context(block_writer.meta.track_lo_vals.len());
+        Ok(TrackWriter {
+            block_writer,
+            meta: TrackMeta::default(),
+        })
+    }
+
+    pub(crate) fn finish_track(mut self, wr: &mut impl Writer) -> Result<BlockWriter> {
+        self.meta.write(wr)?;
+        wr.pop_context();
+        wr.pop_context();
+        let pos = wr.pos()?;
+        self.block_writer.meta.track_end_offsets.push(pos);
+        Ok(self.block_writer)
+    }
+}
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum LogicalType {
@@ -426,117 +470,6 @@ fn write_one_or_two_byte_dict_code_chunk(
     wr.write_be_lane_of_annotated_num_slice("lo_lane", 1, vals)?;
     wr.pop_context();
     Ok(())
-}
-
-pub(crate) trait DictEncodable: Eq + Ord {
-    fn get_component_count(&self) -> usize;
-    fn get_component_name(i: usize) -> &'static str;
-    fn get_component_as_int(&self, component: usize, heap: &mut Heap) -> i64;
-
-    fn write_dict_entries(vals: &[&Self], wr: &mut impl Writer) -> Result<()> {
-        let mut heap = Heap::default();
-        wr.push_context("entries");
-        for (c, chunk) in vals.chunks(256).enumerate() {
-            wr.push_context(c);
-            let n_components = chunk
-                .iter()
-                .map(|x| x.get_component_count())
-                .max()
-                .unwrap_or(1);
-            for component in 0..n_components {
-                if n_components > 1 {
-                    wr.push_context(Self::get_component_name(component));
-                }
-                let vals = chunk
-                    .iter()
-                    .map(|x| x.get_component_as_int(component, &mut heap))
-                    .collect::<Vec<i64>>();
-                let (min, wordty) = WordTy::select_min_and_ty(&vals);
-                wr.write_annotated_le_wordty_slice("words", &vals, wordty)?;
-                if n_components > 1 {
-                    wr.pop_context();
-                }
-            }
-            wr.pop_context();
-        }
-        if heap.data.len() > 0 {
-            wr.push_context("heap");
-            wr.write_annotated_le_num("len", heap.data.len())?;
-            wr.write_annotated_byte_slice("data", &heap.data)?;
-            wr.pop_context();
-        }
-        wr.pop_context();
-        Ok(())
-    }
-}
-
-impl DictEncodable for i64 {
-    fn get_component_count(&self) -> usize {
-        1
-    }
-    fn get_component_name(i: usize) -> &'static str {
-        "int"
-    }
-    fn get_component_as_int(&self, _component: usize, _heap: &mut Heap) -> i64 {
-        *self
-    }
-}
-
-impl DictEncodable for OrderedFloat<f64> {
-    fn get_component_count(&self) -> usize {
-        1
-    }
-    fn get_component_name(i: usize) -> &'static str {
-        "flo"
-    }
-    fn get_component_as_int(&self, _component: usize, _heap: &mut Heap) -> i64 {
-        let bytes = self.0.to_le_bytes();
-        i64::from_le_bytes(bytes)
-    }
-}
-
-impl DictEncodable for &[u8] {
-    fn get_component_count(&self) -> usize {
-        if self.len() > 8 {
-            // prefix, len, hash, offset
-            4
-        } else {
-            // prefix, len
-            2
-        }
-    }
-    fn get_component_name(i: usize) -> &'static str {
-        match i {
-            0 => "prefix",
-            1 => "len",
-            2 => "hash",
-            3 => "offset",
-            _ => unreachable!(),
-        }
-    }
-    fn get_component_as_int(&self, component: usize, heap: &mut Heap) -> i64 {
-        match component {
-            0 => {
-                // We treat the first 8 byte prefix of the string as a
-                // big-endian i64, which should I think sort strings
-                // byte-lexicographically. Eventually we should use
-                // a collator here, like the UCA DUCET sequence.
-                let mut buf = [0_u8; 8];
-                let n = self.len().min(8);
-                buf[..n].copy_from_slice(&self[..n]);
-                i64::from_be_bytes(buf)
-            }
-            1 => self.len() as i64,
-            // We emit a small 16-bit hash of the bin; we don't want
-            // to use a full 64-bit hash because that would use too
-            // much space for too little benefit. By the time you've
-            // filtered by length and prefix you're down to a small
-            // collision probability already. 1/65536 more is plenty.
-            2 => (rapidhash::rapidhash(self) & 0xffff) as i64,
-            3 => heap.add(self) as i64,
-            _ => unreachable!(),
-        }
-    }
 }
 
 pub(crate) fn encode_track<T: DictEncodable, W: Writer>(
