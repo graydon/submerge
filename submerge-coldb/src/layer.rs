@@ -13,7 +13,7 @@ pub(crate) struct LayerMeta {
 }
 
 impl LayerMeta {
-    pub const MAGIC: &[u8; 8] = b"columnar";
+    pub const MAGIC: &[u8; 8] = b"submerge";
     pub const VERS: i64 = 0;
 
     pub(crate) fn write_magic_header(&self, wr: &mut impl Writer) -> Result<()> {
