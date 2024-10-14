@@ -8,14 +8,16 @@ impl Bitmap256 {
     pub fn new() -> Self {
         Bitmap256 { bits: [0; 4] }
     }
-    pub fn set(&mut self, i: usize, val: bool) {
+    pub fn set(&mut self, i: u8, val: bool) {
+        let i = i as usize;
         if val {
             self.bits[i / 64] |= 1 << (i % 64);
         } else {
             self.bits[i / 64] &= !(1 << (i % 64));
         }
     }
-    pub fn get(&self, i: usize) -> bool {
+    pub fn get(&self, i: u8) -> bool {
+        let i = i as usize;
         (self.bits[i / 64] & (1 << (i % 64))) != 0
     }
     pub fn set_all(&mut self) {
@@ -52,3 +54,30 @@ impl Bitmap256 {
         }
     }
 }
+
+// A convenience type for storing a set of 256 2-bit values
+// representing numbers in the range 0..3, using two bitmaps.
+#[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+pub struct DoubleBitmap256 {
+    pub lo: Bitmap256,
+    pub hi: Bitmap256,
+}
+
+impl DoubleBitmap256 {
+    pub fn new() -> Self {
+        DoubleBitmap256 {
+            lo: Bitmap256::new(),
+            hi: Bitmap256::new(),
+        }
+    }
+    pub fn set(&mut self, i: u8, val: u8) {
+        self.lo.set(i, val & 1 != 0);
+        self.hi.set(i, val & 2 != 0);
+    }
+    pub fn get(&self, i: u8) -> u8 {
+        let lo = if self.lo.get(i) { 1 } else { 0 };
+        let hi = if self.hi.get(i) { 2 } else { 0 };
+        lo | hi
+    }
+}
+

@@ -1,14 +1,14 @@
 use std::{
     fs::File,
     io::{BufReader, BufWriter, Cursor, Read, Seek, Write},
-    path::{Display, PathBuf},
+    path::PathBuf,
     sync::Arc,
 };
 use submerge_base::{err, Bitmap256, Result};
 
 #[cfg(test)]
 use crate::test::annotations::Annotations;
-use crate::WordTy;
+use crate::wordty::WordTy;
 #[cfg(not(test))]
 pub(crate) struct Annotations;
 #[cfg(not(test))]
@@ -136,11 +136,10 @@ pub(crate) trait Writer: Write + Seek + Send + Sized {
     }
     fn write_annotated_le_wordty_slice(
         &mut self,
-        name: &str,
         val: &[i64],
         wordty: WordTy,
     ) -> Result<()> {
-        self.annotate(name, |w| {
+        self.annotate(wordty.slice_name(), |w| {
             let n = wordty.len();
             for &v in val {
                 w.write_all(&v.to_le_bytes()[0..n])?;
@@ -185,8 +184,9 @@ pub(crate) trait Writer: Write + Seek + Send + Sized {
     }
 }
 
-pub(crate) trait Bitmap256IoExt {
+pub(crate) trait Bitmap256IoExt: Sized {
     fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()>;
+    fn read(rd: &mut impl Reader) -> Result<Self>;
 }
 
 impl Bitmap256IoExt for Bitmap256 {
@@ -195,6 +195,31 @@ impl Bitmap256IoExt for Bitmap256 {
         wr.write_annotated_le_num_slice::<8, u64, &str>("bitmap", &self.bits)?;
         wr.pop_context();
         Ok(())
+    }
+    fn read(rd: &mut impl Reader) -> Result<Self> {
+        let mut bits = [0_u64; 4];
+        rd.read_le_num_slice(&mut bits)?;
+        Ok(Bitmap256 { bits })
+    }
+}
+
+pub(crate) trait DoubleBitmap256IoExt : Sized {
+    fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()>;
+    fn read(rd: &mut impl Reader) -> Result<Self>;
+}
+
+impl DoubleBitmap256IoExt for submerge_base::DoubleBitmap256 {
+    fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
+        wr.push_context(name);
+        self.lo.write_annotated("lo", wr)?;
+        self.hi.write_annotated("hi", wr)?;
+        wr.pop_context();
+        Ok(())
+    }
+    fn read(rd: &mut impl Reader) -> Result<Self> {
+        let lo = Bitmap256::read(rd)?;
+        let hi = Bitmap256::read(rd)?;
+        Ok(submerge_base::DoubleBitmap256 { lo, hi })
     }
 }
 

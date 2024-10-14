@@ -1,11 +1,8 @@
 use crate::{
-    encode_track,
-    ioutil::{MemWriter, Writer},
-    neg_virt_base_and_factor, pos_virt_base_and_factor,
-    wordty::WordTy,
-    BlockMeta, LayerMeta, Result,
+    ioutil::MemWriter, layer::LayerWriter, neg_virt_base_and_factor, pos_virt_base_and_factor, wordty::WordTy, 
 };
 use test_log::test;
+use submerge_base::Result;
 
 pub(crate) mod annotations;
 
@@ -38,37 +35,29 @@ fn test_wordty() {
 #[test]
 fn test_annotations() -> Result<()> {
     let mut w = MemWriter::new();
-    w.push_context("layer");
-    let lm = LayerMeta::default();
-    lm.write_magic_header(&mut w)?;
-    w.push_context("block");
-    let bm = BlockMeta::default();
-    w.push_context("track");
+    
+    LayerWriter::new(&mut w)?
+        .begin_block(&mut w)?
 
-    w.push_context(0);
-    let tm = encode_track(
-        &[0xaa55, 0xaa55, 0xaa55, 6, 6, 6, 5, 6, 5, 3, 4, 2_i64],
-        &mut w,
-    )?;
-    tm.write(&mut w)?;
-    w.pop_context();
+        .begin_track(&mut w)?
+        .write_dict_encoded(&[0xaa55, 0xaa55, 0xaa55, 6, 6, 6, 5, 6, 5, 3, 4, 2_i64], &mut w)?
+        .finish_track(&mut w)?
 
-    w.push_context(1);
-    let tm = encode_track(
-        &[
+        .begin_track(&mut w)?
+        .write_dict_encoded(&[
             "hi there silly!".as_bytes(),
             "can see no way".as_bytes(),
             "no".as_bytes(),
-        ],
-        &mut w,
-    )?;
-    tm.write(&mut w)?;
-    w.pop_context();
+        ], &mut w)?
+        .finish_track(&mut w)?
 
-    bm.write(&mut w)?;
-    w.pop_context();
-    lm.write(&mut w)?;
-    w.pop_context();
+        .begin_track(&mut w)?
+        .write_dict_encoded(&[0xffff_ffff_i64; 1024], &mut w)?
+        .finish_track(&mut w)?
+
+        .finish_block(&mut w)?
+        .finish_layer(&mut w)?;
+
     eprintln!("dump:\n{}", w.render_annotations()?);
     Ok(())
 }
