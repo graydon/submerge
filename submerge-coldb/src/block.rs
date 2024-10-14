@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
-use crate::{ioutil::{Bitmap256IoExt, Writer}, layer::{LayerReader, LayerWriter}, track::{TrackInfoForBlock, TrackWriter}};
+use crate::{
+    ioutil::{Bitmap256IoExt, Writer},
+    layer::{LayerReader, LayerWriter},
+    track::{TrackInfoForBlock, TrackWriter},
+};
 use submerge_base::{err, Bitmap256, Result};
-
 
 pub(crate) struct BlockWriter {
     layer_writer: LayerWriter,
@@ -11,7 +14,11 @@ pub(crate) struct BlockWriter {
 }
 
 impl BlockWriter {
-    pub(crate) fn new(layer_writer: LayerWriter, block_num: usize, wr: &mut impl Writer) -> Result<Self> {
+    pub(crate) fn new(
+        layer_writer: LayerWriter,
+        block_num: usize,
+        wr: &mut impl Writer,
+    ) -> Result<Self> {
         wr.push_context("block");
         wr.push_context(block_num);
         let info = BlockInfoForLayer {
@@ -22,7 +29,7 @@ impl BlockWriter {
         Ok(BlockWriter {
             layer_writer,
             meta,
-            info
+            info,
         })
     }
 
@@ -31,7 +38,11 @@ impl BlockWriter {
         TrackWriter::new(self, track_num, wr)
     }
 
-    pub(crate) fn note_track_finished(&mut self, wr: &mut impl Writer, info: &TrackInfoForBlock) -> Result<()> {
+    pub(crate) fn note_track_finished(
+        &mut self,
+        wr: &mut impl Writer,
+        info: &TrackInfoForBlock,
+    ) -> Result<()> {
         self.meta.track_lo_vals.push(info.lo_val);
         self.meta.track_hi_vals.push(info.hi_val);
         self.meta.track_implicit.set(info.track_num, info.implicit);
@@ -90,11 +101,10 @@ impl BlockMeta {
         wr.pop_context();
         Ok(())
     }
-} 
+}
 
 pub(crate) struct BlockReader {
     layer_reader: Arc<LayerReader>,
     block_num: usize,
     meta: BlockMeta,
 }
-

@@ -39,14 +39,17 @@ pub(crate) trait Reader: Read + Seek + Send + Sized {
         self.read_exact(&mut buf)?;
         Ok(T::from_le_bytes(buf))
     }
-    fn read_le_num_slice<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(&mut self, slice: &mut [T]) -> Result<()> {
+    fn read_le_num_slice<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(
+        &mut self,
+        slice: &mut [T],
+    ) -> Result<()> {
         for slot in slice {
             *slot = self.read_le_num::<N, T>()?;
         }
         Ok(())
     }
     fn read_footer_len_and_rewind_to_start(&mut self) -> Result<()> {
-        let len: i64 = self.read_le_num::<8,i64>()?;
+        let len: i64 = self.read_le_num::<8, i64>()?;
         if len < 0 {
             return Err(err("negative footer len"));
         }
@@ -134,11 +137,7 @@ pub(crate) trait Writer: Write + Seek + Send + Sized {
         }
         self.write_annotated_le_num("self_len", len)
     }
-    fn write_annotated_le_wordty_slice(
-        &mut self,
-        val: &[i64],
-        wordty: WordTy,
-    ) -> Result<()> {
+    fn write_annotated_le_wordty_slice(&mut self, val: &[i64], wordty: WordTy) -> Result<()> {
         self.annotate(wordty.slice_name(), |w| {
             let n = wordty.len();
             for &v in val {
@@ -203,7 +202,7 @@ impl Bitmap256IoExt for Bitmap256 {
     }
 }
 
-pub(crate) trait DoubleBitmap256IoExt : Sized {
+pub(crate) trait DoubleBitmap256IoExt: Sized {
     fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()>;
     fn read(rd: &mut impl Reader) -> Result<Self>;
 }

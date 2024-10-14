@@ -43,10 +43,9 @@ impl WordTy {
     }
 }
 
-
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub(crate) struct WordTy256 {
-    bitmaps: DoubleBitmap256
+    bitmaps: DoubleBitmap256,
 }
 
 impl WordTy256 {

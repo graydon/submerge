@@ -65,17 +65,16 @@
 
 #![allow(dead_code, unused_variables)]
 
-
-#[cfg(test)]
-mod test;
-mod ioutil;
-mod wordty;
+mod block;
+mod chunk;
 mod dict;
 mod heap;
+mod ioutil;
 mod layer;
-mod block;
+#[cfg(test)]
+mod test;
 mod track;
-mod chunk;
+mod wordty;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum LogicalType {

@@ -1,12 +1,18 @@
 use std::sync::Arc;
 
-use crate::{block::{BlockReader, BlockWriter}, chunk::{DictCodeChunkMeta, DictCodeChunkWriter, DictEntryChunkMeta, DictEntryChunkWriter}, dict::DictEncodable, heap::Heap, ioutil::{Bitmap256IoExt, Writer}, wordty::WordTy256};
+use crate::{
+    block::{BlockReader, BlockWriter},
+    chunk::{DictCodeChunkMeta, DictCodeChunkWriter, DictEntryChunkMeta, DictEntryChunkWriter},
+    dict::DictEncodable,
+    heap::Heap,
+    ioutil::{Bitmap256IoExt, Writer},
+    wordty::WordTy256,
+};
 use submerge_base::{err, Bitmap256, Result};
 
 // TrackMeta is nonempty only when track encoding is not Virt
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub(crate) struct TrackMeta {
-
     // If the track is virtual, there is _no_ track metadata read or written.
     chunk_populated: Bitmap256, // 1 bit per chunk, 1 if any row in chunk is populated
 
@@ -91,9 +97,12 @@ pub(crate) fn dict_encode<T: Ord + Eq>(vals: &[T]) -> Result<(Vec<&T>, Vec<u16>)
     Ok((values, codes))
 }
 
-
 impl TrackWriter {
-    pub(crate) fn new(block_writer: BlockWriter, track_num: usize,  wr: &mut impl Writer) -> Result<Self> {
+    pub(crate) fn new(
+        block_writer: BlockWriter,
+        track_num: usize,
+        wr: &mut impl Writer,
+    ) -> Result<Self> {
         if track_num > 255 {
             return Err(err("track count > 255"));
         }
@@ -116,29 +125,46 @@ impl TrackWriter {
         })
     }
 
-    pub(crate) fn note_dict_entry_chunk_finished(&mut self, wr: &mut impl Writer, meta: &DictEntryChunkMeta) -> Result<()> {
+    pub(crate) fn note_dict_entry_chunk_finished(
+        &mut self,
+        wr: &mut impl Writer,
+        meta: &DictEntryChunkMeta,
+    ) -> Result<()> {
         Ok(())
     }
 
-    pub(crate) fn note_dict_code_chunk_finished(&mut self, wr: &mut impl Writer, meta: &DictCodeChunkMeta) -> Result<()> {
+    pub(crate) fn note_dict_code_chunk_finished(
+        &mut self,
+        wr: &mut impl Writer,
+        meta: &DictCodeChunkMeta,
+    ) -> Result<()> {
         Ok(())
     }
 
-    pub(crate) fn write_dict_encoded<T: DictEncodable>(mut self, vals: &[T], wr: &mut impl Writer) -> Result<Self> {
-
+    pub(crate) fn write_dict_encoded<T: DictEncodable>(
+        mut self,
+        vals: &[T],
+        wr: &mut impl Writer,
+    ) -> Result<Self> {
         if vals.len() > 0xffff {
             return Err(err("track longer than 64k rows"));
         }
         self.info.rows = vals.len() as u16;
         self.info.implicit = false;
         if vals.len() == 0 {
-            return Ok(self)
+            return Ok(self);
         }
 
         let (dict, codes) = dict_encode(vals)?;
         let max_dict_code = (dict.len() - 1) as u16;
-        self.info.lo_val = dict.first().ok_or_else(|| err("dict empty"))?.get_value_as_int();
-        self.info.hi_val = dict.last().ok_or_else(|| err("dict empty"))?.get_value_as_int();
+        self.info.lo_val = dict
+            .first()
+            .ok_or_else(|| err("dict empty"))?
+            .get_value_as_int();
+        self.info.hi_val = dict
+            .last()
+            .ok_or_else(|| err("dict empty"))?
+            .get_value_as_int();
 
         let mut heap = Heap::default();
 

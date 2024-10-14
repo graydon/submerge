@@ -55,26 +55,30 @@ impl Annotations {
                 continue;
             }
             let mut prev = [0u8; 16];
-            let mut skipped = 0;
-            let mut skipstart = 0;
+            let mut repeated = 0;
+            let mut suppress_start = 0;
+            const DISPLAYED_REPEAT_LIMIT_BEFORE_SUPPRESS: usize = 1;
             for (n, line) in bytes.chunks(16).enumerate() {
-                if n > 0 && prev == line {
-                    if skipped == 0 {
-                        skipstart = lo_usz + (n * 16);
+                if n > 0 && line.len() == 16 && prev == line {
+                    if repeated == DISPLAYED_REPEAT_LIMIT_BEFORE_SUPPRESS {
+                        suppress_start = lo_usz + (n * 16);
                     }
-                    skipped += 1;
-                    continue;
+                    repeated += 1;
+                    if repeated > DISPLAYED_REPEAT_LIMIT_BEFORE_SUPPRESS {
+                        continue;
+                    }
                 }
                 if line.len() == 16 {
                     prev.copy_from_slice(line);
                 }
-                if skipped > 0 {
+                if repeated > DISPLAYED_REPEAT_LIMIT_BEFORE_SUPPRESS {
                     writeln!(
                         s,
                         "\t {:08.8x} | ... previous line repeated {} times",
-                        skipstart, skipped
+                        suppress_start,
+                        (repeated - DISPLAYED_REPEAT_LIMIT_BEFORE_SUPPRESS)
                     )?;
-                    skipped = 0;
+                    repeated = 0;
                 }
                 write!(s, "\t {:08.8x} |", lo_usz + (n * 16))?;
                 for group in line.chunks(4) {
@@ -99,11 +103,12 @@ impl Annotations {
                 }
                 writeln!(s, "")?;
             }
-            if skipped > 0 {
+            if repeated > DISPLAYED_REPEAT_LIMIT_BEFORE_SUPPRESS {
                 writeln!(
                     s,
                     "\t {:08.8x} | ... previous line repeated {} times",
-                    skipstart, skipped
+                    suppress_start,
+                    (repeated - DISPLAYED_REPEAT_LIMIT_BEFORE_SUPPRESS)
                 )?;
             }
         }

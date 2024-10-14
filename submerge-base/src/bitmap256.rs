@@ -80,4 +80,3 @@ impl DoubleBitmap256 {
         lo | hi
     }
 }
-

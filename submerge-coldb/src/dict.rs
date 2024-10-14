@@ -1,15 +1,18 @@
-use ordered_float::OrderedFloat;
 use super::heap::Heap;
+use ordered_float::OrderedFloat;
 
 pub(crate) trait DictEncodable: Eq + Ord {
-
     fn get_value_as_int(&self) -> i64;
 
     // The number of components in the encoding of this value.
     // Bin values have either 2 or 4 components, depending on
     // length. Int and flo have only 1 component.
-    fn get_component_count(&self) -> usize { 1 }
-    fn get_component_name(i: usize) -> &'static str { "val" }
+    fn get_component_count(&self) -> usize {
+        1
+    }
+    fn get_component_name(i: usize) -> &'static str {
+        "val"
+    }
     fn get_component_as_int(&self, component: usize, _heap: &mut Heap) -> i64 {
         if component == 0 {
             self.get_value_as_int()
@@ -65,9 +68,7 @@ impl DictEncodable for &[u8] {
     }
     fn get_component_as_int(&self, component: usize, heap: &mut Heap) -> i64 {
         match component {
-            0 => {
-                self.get_value_as_int()
-            }
+            0 => self.get_value_as_int(),
             1 => self.len() as i64,
             // We emit a small 16-bit hash of the bin; we don't want
             // to use a full 64-bit hash because that would use too

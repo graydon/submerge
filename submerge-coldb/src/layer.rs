@@ -1,6 +1,8 @@
-use crate::{block::{BlockInfoForLayer, BlockWriter}, ioutil::{Reader, Writer}};
+use crate::{
+    block::{BlockInfoForLayer, BlockWriter},
+    ioutil::{Reader, Writer},
+};
 use submerge_base::{err, Result};
-
 
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub(crate) struct LayerMeta {
@@ -11,8 +13,7 @@ pub(crate) struct LayerMeta {
 }
 
 impl LayerMeta {
-
-    pub const MAGIC: &[u8;8] = b"columnar";
+    pub const MAGIC: &[u8; 8] = b"columnar";
     pub const VERS: i64 = 0;
 
     pub(crate) fn write_magic_header(&self, wr: &mut impl Writer) -> Result<()> {
@@ -40,14 +41,14 @@ impl LayerMeta {
 
     pub(crate) fn read(rd: &mut impl Reader) -> Result<Self> {
         rd.rewind()?;
-        let mut buf: [u8;8] = [0;8];
+        let mut buf: [u8; 8] = [0; 8];
         rd.read_exact(&mut buf)?;
         if buf != *Self::MAGIC {
-            return Err(err("bad magic number"))
+            return Err(err("bad magic number"));
         }
         let vers: i64 = rd.read_le_num()?;
         if vers > Self::VERS {
-            return Err(err("unsupported future version number"))
+            return Err(err("unsupported future version number"));
         }
         rd.seek(std::io::SeekFrom::End(0))?;
         rd.read_footer_len_and_rewind_to_start()?;
@@ -61,7 +62,10 @@ impl LayerMeta {
         let mut block_end_offsets = vec![0_i64; ublocks];
         rd.read_le_num_slice(&mut block_end_offsets)?;
         Ok(Self {
-            vers, rows, cols, block_end_offsets
+            vers,
+            rows,
+            cols,
+            block_end_offsets,
         })
     }
 }
@@ -75,9 +79,7 @@ impl LayerWriter {
         wr.push_context("layer");
         let meta = LayerMeta::default();
         meta.write_magic_header(wr)?;
-        Ok(LayerWriter {
-            meta,
-        })
+        Ok(LayerWriter { meta })
     }
 
     pub(crate) fn begin_block(self, wr: &mut impl Writer) -> Result<BlockWriter> {
@@ -85,7 +87,11 @@ impl LayerWriter {
         BlockWriter::new(self, block_num, wr)
     }
 
-    pub(crate) fn note_block_finished(&mut self, wr: &mut impl Writer, info: &BlockInfoForLayer) -> Result<()> {
+    pub(crate) fn note_block_finished(
+        &mut self,
+        wr: &mut impl Writer,
+        info: &BlockInfoForLayer,
+    ) -> Result<()> {
         self.meta.block_end_offsets.push(info.end_pos);
         Ok(())
     }

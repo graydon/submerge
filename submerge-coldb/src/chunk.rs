@@ -1,4 +1,3 @@
-use std::sync::Arc;
 use crate::{
     dict::{self, DictEncodable},
     heap::Heap,
@@ -6,6 +5,7 @@ use crate::{
     track::{TrackReader, TrackWriter},
     wordty::WordTy,
 };
+use std::sync::Arc;
 use submerge_base::{err, Result};
 
 // There are Two flavours of chunks: dict-entry and dict-code.
@@ -152,7 +152,6 @@ pub(crate) fn run_end_encode<T: Eq>(vals: &[T]) -> Result<(Vec<&T>, Vec<u16>)> {
     Ok((run_vals, run_ends))
 }
 
-
 fn write_one_or_two_byte_dict_code_chunk(
     vals: &[u16],
     any_two_bytes: bool,
@@ -166,7 +165,6 @@ fn write_one_or_two_byte_dict_code_chunk(
     wr.pop_context();
     Ok(())
 }
-
 
 pub(crate) struct ChunkReader {
     track_reader: Arc<TrackReader>,
