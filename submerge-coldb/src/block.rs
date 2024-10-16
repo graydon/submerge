@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::{
-    ioutil::{Bitmap256IoExt, Writer},
+    ioutil::{Bitmap256IoExt, Reader, Writer},
     layer::{LayerReader, LayerWriter},
-    track::{TrackInfoForBlock, TrackWriter},
+    track::{TrackInfoForBlock, TrackReader, TrackWriter},
 };
 use submerge_base::{err, Bitmap256, Result};
 
@@ -64,8 +64,8 @@ impl BlockWriter {
 pub(crate) struct BlockMeta {
     track_lo_vals: Vec<i64>,
     track_hi_vals: Vec<i64>,
-    track_implicit: Bitmap256,
-    track_rows: Vec<u16>, // row count for each track; may vary across substructure tracks
+    track_implicit: Bitmap256, // FIXME: limits us to 256 tracks, maybe make variable-length?
+    track_rows: Vec<u16>,      // row count for each track; may vary across substructure tracks
     track_end_offsets: Vec<i64>,
 }
 
@@ -92,6 +92,7 @@ impl BlockMeta {
         }
         wr.push_context("meta");
         let start_pos = wr.pos()?;
+        wr.write_annotated_le_num("track_num", ntracks as i64)?;
         wr.write_annotated_le_num_slice("track_lo_vals", &self.track_lo_vals)?;
         wr.write_annotated_le_num_slice("track_hi_vals", &self.track_hi_vals)?;
         self.track_implicit.write_annotated("track_implicit", wr)?;
@@ -101,10 +102,61 @@ impl BlockMeta {
         wr.pop_context();
         Ok(())
     }
+
+    pub(crate) fn read_from_footer_end(rd: &mut impl Reader, end_pos: i64) -> Result<Self> {
+        rd.read_footer_len_ending_at_pos_and_rewind_to_start(end_pos)?;
+        let mut meta = BlockMeta::default();
+        let ntracks: i64 = rd.read_le_num()?;
+        if ntracks < 0 {
+            return Err(err("negative track count"));
+        }
+        if ntracks > 255 {
+            return Err(err("track count > 255"));
+        }
+        let ntracks = ntracks as usize;
+        meta.track_lo_vals = rd.read_le_num_vec(ntracks)?;
+        meta.track_hi_vals = rd.read_le_num_vec(ntracks)?;
+        meta.track_implicit = Bitmap256::read(rd)?;
+        meta.track_rows = rd.read_le_num_vec(ntracks)?;
+        meta.track_end_offsets = rd.read_le_num_vec(ntracks)?;
+        Ok(meta)
+    }
 }
 
 pub(crate) struct BlockReader {
     layer_reader: Arc<LayerReader>,
     block_num: usize,
     meta: BlockMeta,
+}
+
+impl BlockReader {
+    pub(crate) fn new(
+        layer_reader: &Arc<LayerReader>,
+        block_num: usize,
+        end_pos: i64,
+        rd: &mut impl Reader,
+    ) -> Result<Arc<Self>> {
+        let layer_reader = layer_reader.clone();
+        let meta = BlockMeta::read_from_footer_end(rd, end_pos)?;
+        Ok(Arc::new(BlockReader {
+            layer_reader,
+            block_num,
+            meta,
+        }))
+    }
+
+    pub(crate) fn new_track_reader(
+        self: &Arc<Self>,
+        track_num: usize,
+        rd: &mut impl Reader,
+    ) -> Result<Arc<TrackReader>> {
+        if let Some(&end_pos) = self.meta.track_end_offsets.get(track_num) {
+            if end_pos < 0 {
+                return Err(err("negative track end offset"));
+            }
+            TrackReader::new(self, track_num, end_pos, rd)
+        } else {
+            Err(err("track number out of range"))
+        }
+    }
 }

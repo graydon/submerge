@@ -1,3 +1,5 @@
+use std::u64;
+
 /// A simple 32-byte / 256-bit bitmap that counts bits in order from
 /// least-to-most significant bits and ascending words.
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
@@ -29,6 +31,22 @@ impl Bitmap256 {
     pub fn count(&self) -> u32 {
         self.bits.iter().map(|x| x.count_ones()).sum()
     }
+    // Return the number of bits set up to and including i.
+    // NB: if all bits are set, this returns 256, not 255,
+    // and so does not fit in a u8.
+    pub fn rank(&self, mut i: u8) -> usize {
+        let mut bits = 0;
+        for word in &self.bits {
+            if i <= 63 {
+                let mask = u64::MAX >> (63 - i);
+                bits += (word & mask).count_ones();
+                break;
+            }
+            bits += word.count_ones();
+            i -= 64;
+        }
+        bits as usize
+    }
     pub fn is_empty(&self) -> bool {
         self.bits.iter().all(|x| *x == 0)
     }
@@ -56,27 +74,40 @@ impl Bitmap256 {
 }
 
 // A convenience type for storing a set of 256 2-bit values
-// representing numbers in the range 0..3, using two bitmaps.
+// representing numbers in the range 0..3. This comes up fairly
+// often in the coldb codebase.
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub struct DoubleBitmap256 {
-    pub lo: Bitmap256,
-    pub hi: Bitmap256,
+    pub double_bits: [u64; 8],
 }
 
 impl DoubleBitmap256 {
     pub fn new() -> Self {
         DoubleBitmap256 {
-            lo: Bitmap256::new(),
-            hi: Bitmap256::new(),
+            double_bits: [0; 8],
         }
     }
     pub fn set(&mut self, i: u8, val: u8) {
-        self.lo.set(i, val & 1 != 0);
-        self.hi.set(i, val & 2 != 0);
+        let lo = 2 * (i as usize);
+        let hi = lo + 1;
+        let lo_val = val & 1 != 0;
+        let hi_val = val & 2 != 0;
+        if lo_val {
+            self.double_bits[lo / 64] |= 1 << (lo % 64);
+        } else {
+            self.double_bits[lo / 64] &= !(1 << (lo % 64));
+        }
+        if hi_val {
+            self.double_bits[hi / 64] |= 1 << (hi % 64);
+        } else {
+            self.double_bits[hi / 64] &= !(1 << (hi % 64));
+        }
     }
     pub fn get(&self, i: u8) -> u8 {
-        let lo = if self.lo.get(i) { 1 } else { 0 };
-        let hi = if self.hi.get(i) { 2 } else { 0 };
-        lo | hi
+        let lo = 2 * (i as usize);
+        let hi = lo + 1;
+        let lo_val = (self.double_bits[lo / 64] & (1 << (lo % 64))) != 0;
+        let hi_val = (self.double_bits[hi / 64] & (1 << (hi % 64))) != 0;
+        (lo_val as u8) | (hi_val as u8) << 1
     }
 }

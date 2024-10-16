@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use crate::{
-    block::{BlockInfoForLayer, BlockWriter},
+    block::{self, BlockInfoForLayer, BlockReader, BlockWriter},
     ioutil::{Reader, Writer},
 };
 use submerge_base::{err, Result};
@@ -21,6 +23,16 @@ impl LayerMeta {
         wr.write_annotated_byte_slice("magic", Self::MAGIC)
     }
 
+    pub(crate) fn read_and_check_magic_header(rd: &mut impl Reader) -> Result<()> {
+        rd.rewind()?;
+        let mut buf: [u8; 8] = [0; 8];
+        rd.read_exact(&mut buf)?;
+        if buf != *Self::MAGIC {
+            return Err(err("bad magic number"));
+        }
+        Ok(())
+    }
+
     pub(crate) fn write(&self, wr: &mut impl Writer) -> Result<()> {
         wr.push_context("meta");
         let start_pos = wr.pos()?;
@@ -40,18 +52,10 @@ impl LayerMeta {
     }
 
     pub(crate) fn read(rd: &mut impl Reader) -> Result<Self> {
-        rd.rewind()?;
-        let mut buf: [u8; 8] = [0; 8];
-        rd.read_exact(&mut buf)?;
-        if buf != *Self::MAGIC {
-            return Err(err("bad magic number"));
-        }
         let vers: i64 = rd.read_le_num()?;
         if vers > Self::VERS {
             return Err(err("unsupported future version number"));
         }
-        rd.seek(std::io::SeekFrom::End(0))?;
-        rd.read_footer_len_and_rewind_to_start()?;
         let rows: i64 = rd.read_le_num()?;
         let cols: i64 = rd.read_le_num()?;
         let blocks: i64 = rd.read_le_num()?;
@@ -105,4 +109,30 @@ impl LayerWriter {
 
 pub(crate) struct LayerReader {
     meta: LayerMeta,
+}
+
+impl LayerReader {
+    pub fn new(rd: &mut impl Reader) -> Result<Arc<Self>> {
+        LayerMeta::read_and_check_magic_header(rd)?;
+        rd.seek(std::io::SeekFrom::End(0))?;
+        let end_pos = rd.pos()?;
+        rd.read_footer_len_ending_at_pos_and_rewind_to_start(end_pos)?;
+        let meta = LayerMeta::read(rd)?;
+        Ok(Arc::new(LayerReader { meta }))
+    }
+
+    pub fn new_block_reader(
+        self: &Arc<Self>,
+        block_num: usize,
+        rd: &mut impl Reader,
+    ) -> Result<Arc<BlockReader>> {
+        if let Some(&end_pos) = self.meta.block_end_offsets.get(block_num) {
+            if end_pos < 0 {
+                return Err(err("negative block end offset"));
+            }
+            BlockReader::new(self, block_num, end_pos, rd)
+        } else {
+            Err(err("block number out of range"))
+        }
+    }
 }

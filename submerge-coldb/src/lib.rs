@@ -71,10 +71,11 @@ mod dict;
 mod heap;
 mod ioutil;
 mod layer;
-#[cfg(test)]
-mod test;
 mod track;
 mod wordty;
+
+#[cfg(test)]
+mod test;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum LogicalType {

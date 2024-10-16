@@ -34,10 +34,21 @@ impl RangeExt for std::ops::Range<i64> {
 
 pub(crate) trait Reader: Read + Seek + Send + Sized {
     fn try_clone_independent(&self) -> Result<Self>;
+    fn pos(&mut self) -> Result<i64> {
+        Ok(self.stream_position()?.try_into()?)
+    }
     fn read_le_num<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(&mut self) -> Result<T> {
         let mut buf: [u8; N] = [0; N];
         self.read_exact(&mut buf)?;
         Ok(T::from_le_bytes(buf))
+    }
+    fn read_le_num_vec<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(
+        &mut self,
+        len: usize,
+    ) -> Result<Vec<T>> {
+        let mut buf = vec![T::default(); len];
+        self.read_le_num_slice(&mut buf)?;
+        Ok(buf)
     }
     fn read_le_num_slice<const N: usize, T: funty::Numeric<Bytes = [u8; N]>>(
         &mut self,
@@ -48,7 +59,12 @@ pub(crate) trait Reader: Read + Seek + Send + Sized {
         }
         Ok(())
     }
-    fn read_footer_len_and_rewind_to_start(&mut self) -> Result<()> {
+    fn read_footer_len_ending_at_pos_and_rewind_to_start(&mut self, pos: i64) -> Result<()> {
+        if pos < 8 {
+            return Err(err("footer seek underflow"));
+        }
+        let pos_minus_len_len = pos - 8;
+        self.seek(std::io::SeekFrom::Start(pos_minus_len_len as u64))?;
         let len: i64 = self.read_le_num::<8, i64>()?;
         if len < 0 {
             return Err(err("negative footer len"));
@@ -188,16 +204,53 @@ pub(crate) trait Bitmap256IoExt: Sized {
     fn read(rd: &mut impl Reader) -> Result<Self>;
 }
 
+// writes words to bytes, trimming trailing zeros. returns the slice of bytes
+// that contains the non-zero byte prefix.
+fn words_to_min_bytes<'w, 'b>(words: &'w [u64], bytes: &'b mut [u8]) -> &'b [u8] {
+    let mut i = 0;
+    let mut last_nonzero_byte_idx = 0;
+    for mut w in words.iter().cloned() {
+        for _ in 0..8 {
+            let byte = w as u8;
+            if byte != 0 {
+                last_nonzero_byte_idx = i;
+            }
+            bytes[i] = byte;
+            w >>= 8;
+            i += 1;
+        }
+    }
+    &bytes[..=last_nonzero_byte_idx]
+}
+
 impl Bitmap256IoExt for Bitmap256 {
     fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
         wr.push_context(name);
-        wr.write_annotated_le_num_slice::<8, u64, &str>("bitmap", &self.bits)?;
+        let mut buf: [u8; 32] = [0; 32];
+        let out = words_to_min_bytes(&self.bits, &mut buf);
+        if out.len() > 32 {
+            return Err(err("bitmap too long"));
+        }
+        let n = out.len() as u8;
+        wr.push_context("bitmap");
+        wr.write_annotated_byte_slice("len", &[n])?;
+        wr.write_annotated_byte_slice("bytes", out)?;
+        wr.pop_context();
         wr.pop_context();
         Ok(())
     }
     fn read(rd: &mut impl Reader) -> Result<Self> {
         let mut bits = [0_u64; 4];
-        rd.read_le_num_slice(&mut bits)?;
+        let n = rd.read_le_num::<1, u8>()?;
+        if n > 32 {
+            return Err(err("bitmap too long"));
+        }
+        let mut buf = [0_u8; 32];
+        rd.read_exact(&mut buf[..n as usize])?;
+        for (i, chunk) in buf.chunks_exact(8).enumerate() {
+            let word = u64::from_le_bytes(chunk.try_into().unwrap());
+            bits[i] = word;
+        }
         Ok(Bitmap256 { bits })
     }
 }
@@ -210,15 +263,32 @@ pub(crate) trait DoubleBitmap256IoExt: Sized {
 impl DoubleBitmap256IoExt for submerge_base::DoubleBitmap256 {
     fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
         wr.push_context(name);
-        self.lo.write_annotated("lo", wr)?;
-        self.hi.write_annotated("hi", wr)?;
+        let mut buf: [u8; 64] = [0; 64];
+        let out = words_to_min_bytes(&self.double_bits, &mut buf);
+        if out.len() > 64 {
+            return Err(err("bitmap too long"));
+        }
+        let n = out.len() as u8;
+        wr.push_context("double_bitmap");
+        wr.write_annotated_byte_slice("len", &[n])?;
+        wr.write_annotated_byte_slice("bytes", out)?;
+        wr.pop_context();
         wr.pop_context();
         Ok(())
     }
     fn read(rd: &mut impl Reader) -> Result<Self> {
-        let lo = Bitmap256::read(rd)?;
-        let hi = Bitmap256::read(rd)?;
-        Ok(submerge_base::DoubleBitmap256 { lo, hi })
+        let mut double_bits = [0_u64; 8];
+        let n = rd.read_le_num::<1, u8>()?;
+        if n > 64 {
+            return Err(err("bitmap too long"));
+        }
+        let mut buf = [0_u8; 64];
+        rd.read_exact(&mut buf[..n as usize])?;
+        for (i, chunk) in buf.chunks_exact(8).enumerate() {
+            let word = u64::from_le_bytes(chunk.try_into().unwrap());
+            double_bits[i] = word;
+        }
+        Ok(submerge_base::DoubleBitmap256 { double_bits })
     }
 }
 

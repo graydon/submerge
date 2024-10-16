@@ -1,7 +1,7 @@
-use crate::ioutil::{DoubleBitmap256IoExt, Writer};
+use crate::ioutil::{DoubleBitmap256IoExt, Reader, Writer};
 use submerge_base::{DoubleBitmap256, Result};
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub(crate) enum WordTy {
     Word1,
     Word2,
@@ -69,5 +69,9 @@ impl WordTy256 {
     }
     pub(crate) fn write_annotated(&self, name: &str, wr: &mut impl Writer) -> Result<()> {
         self.bitmaps.write_annotated("word_tys", wr)
+    }
+    pub(crate) fn read(rd: &mut impl Reader) -> Result<Self> {
+        let bitmaps = DoubleBitmap256::read(rd)?;
+        Ok(WordTy256 { bitmaps })
     }
 }

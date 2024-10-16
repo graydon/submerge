@@ -36,6 +36,12 @@ impl DictEncodable for OrderedFloat<f64> {
 }
 
 pub(crate) const LARGE_BIN_COMPONENT_COUNT: usize = 4;
+pub(crate) const SMALL_BIN_COMPONENT_COUNT: usize = 2;
+
+pub(crate) const COMPONENT_VALUE: usize = 0;
+pub(crate) const BIN_COMPONENT_LEN: usize = 1;
+pub(crate) const BIN_COMPONENT_HASH: usize = 2;
+pub(crate) const BIN_COMPONENT_OFFSET: usize = 3;
 
 impl DictEncodable for &[u8] {
     fn get_value_as_int(&self) -> i64 {
@@ -51,32 +57,32 @@ impl DictEncodable for &[u8] {
     fn get_component_count(&self) -> usize {
         if self.len() > 8 {
             // prefix, len, hash, offset
-            4
+            LARGE_BIN_COMPONENT_COUNT
         } else {
             // prefix, len
-            2
+            SMALL_BIN_COMPONENT_COUNT
         }
     }
     fn get_component_name(i: usize) -> &'static str {
         match i {
-            0 => "prefix",
-            1 => "len",
-            2 => "hash",
-            3 => "offset",
+            COMPONENT_VALUE => "prefix",
+            BIN_COMPONENT_LEN => "len",
+            BIN_COMPONENT_HASH => "hash",
+            BIN_COMPONENT_OFFSET => "offset",
             _ => unreachable!(),
         }
     }
     fn get_component_as_int(&self, component: usize, heap: &mut Heap) -> i64 {
         match component {
-            0 => self.get_value_as_int(),
-            1 => self.len() as i64,
+            COMPONENT_VALUE => self.get_value_as_int(),
+            BIN_COMPONENT_LEN => self.len() as i64,
             // We emit a small 16-bit hash of the bin; we don't want
             // to use a full 64-bit hash because that would use too
             // much space for too little benefit. By the time you've
             // filtered by length and prefix you're down to a small
             // collision probability already. 1/65536 more is plenty.
-            2 => (rapidhash::rapidhash(self) & 0xffff) as i64,
-            3 => heap.add(self) as i64,
+            BIN_COMPONENT_HASH => (rapidhash::rapidhash(self) & 0xffff) as i64,
+            BIN_COMPONENT_OFFSET => heap.add(self) as i64,
             _ => unreachable!(),
         }
     }

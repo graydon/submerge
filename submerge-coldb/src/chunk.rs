@@ -1,5 +1,5 @@
 use crate::{
-    dict::{self, DictEncodable},
+    dict::{self, DictEncodable, BIN_COMPONENT_LEN, BIN_COMPONENT_OFFSET, COMPONENT_VALUE},
     heap::Heap,
     ioutil::Writer,
     track::{TrackReader, TrackWriter},
@@ -12,7 +12,10 @@ use submerge_base::{err, Result};
 
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub(crate) struct DictEntryChunkMeta {
-    any_bin_large: bool,
+    pub(crate) any_bin_large: bool,
+    pub(crate) val_ty: Option<WordTy>,
+    pub(crate) bin_len_ty: Option<WordTy>,
+    pub(crate) bin_off_ty: Option<WordTy>,
 }
 
 pub(crate) struct DictEntryChunkWriter {
@@ -52,7 +55,14 @@ impl DictEntryChunkWriter {
                 .map(|x| x.get_component_as_int(component, heap))
                 .collect::<Vec<i64>>();
             let (min, wordty) = WordTy::select_min_and_ty(&vals);
-            wr.write_annotated_le_wordty_slice(&vals, wordty)?;
+            wr.write_annotated_le_wordty_slice(&vals, wordty.clone())?;
+            if component == COMPONENT_VALUE {
+                self.meta.val_ty = Some(wordty);
+            } else if component == BIN_COMPONENT_LEN {
+                self.meta.bin_len_ty = Some(wordty);
+            } else if component == BIN_COMPONENT_OFFSET {
+                self.meta.bin_off_ty = Some(wordty);
+            }
             if n_components > 1 {
                 wr.pop_context();
             }
@@ -70,10 +80,10 @@ impl DictEntryChunkWriter {
 
 #[derive(Clone, Default, PartialEq, Eq, Debug, Hash, PartialOrd, Ord)]
 pub(crate) struct DictCodeChunkMeta {
-    two_bytes: bool,
-    run_coded: bool,
-    min_dict_code: u16,
-    max_dict_code: u16,
+    pub(crate) two_bytes: bool,
+    pub(crate) run_coded: bool,
+    pub(crate) min_dict_code: u16,
+    pub(crate) max_dict_code: u16,
 }
 
 pub(crate) struct DictCodeChunkWriter {
@@ -166,10 +176,19 @@ fn write_one_or_two_byte_dict_code_chunk(
     Ok(())
 }
 
-pub(crate) struct ChunkReader {
+pub(crate) struct DictEntryChunkReader {
     track_reader: Arc<TrackReader>,
+    dict_chunk_num: usize,
+    meta: DictEntryChunkMeta,
 }
 
-impl ChunkReader {
-    fn next(&self, buf: &mut [u8; 32]) {}
+impl DictEntryChunkReader {
+    pub(crate) fn new(track_reader: &Arc<TrackReader>, dict_chunk_num: usize) -> Self {
+        let track_reader = track_reader.clone();
+        DictEntryChunkReader {
+            track_reader,
+            dict_chunk_num,
+            meta: DictEntryChunkMeta::default(),
+        }
+    }
 }
